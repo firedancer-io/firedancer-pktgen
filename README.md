@@ -21,5 +21,5 @@ cmake --build build -j
 **Run**
 
 ```sh
-build/fd_pktgen --help
+build/fdgen --help
 ```
