@@ -30,7 +30,7 @@ add_executable(fdgen
     src/cfg/fdgen_cfg_net.c
     src/cfg/fdgen_cfg_net_socket.c
     src/cfg/fdgen_cfg_net_xdp.c
-    src/tile/fdgen_tile_net_xsk.c)
+    src/tile/net_xsk/fdgen_tile_net_xsk_rx.c)
 
 target_compile_options(fdgen PRIVATE
     -Wall
@@ -48,6 +48,7 @@ target_link_libraries(fdgen
     -pthread
     -lstdc++
     fdgen_xdp_ports
-    ${FIREDANCER_BUILD}/lib/libfd_waltz.a
     ${FIREDANCER_BUILD}/lib/libfd_quic.a
+    ${FIREDANCER_BUILD}/lib/libfd_waltz.a
+    ${FIREDANCER_BUILD}/lib/libfd_tango.a
     ${FIREDANCER_BUILD}/lib/libfd_util.a)

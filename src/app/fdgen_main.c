@@ -4,7 +4,7 @@
 #include <firedancer/util/wksp/fd_wksp.h>
 
 #include "../cfg/fdgen_cfg_net.h"  /* fdgen_port_range_t */
-#include "../tile/fdgen_tile_net_xsk.h"  /* fdgen_tile_net_xsk_run */
+#include "../tile/net_xsk/fdgen_tile_net_xsk_rx.h"  /* fdgen_tile_net_xsk_run */
 
 int
 main( int     argc,
@@ -21,7 +21,7 @@ main( int     argc,
   ulong        numa_idx   = fd_env_strip_cmdline_ulong( &argc, &argv, "--numa-idx", NULL, fd_shmem_numa_idx(cpu_idx) );
   char const * iface      = fd_env_strip_cmdline_cstr ( &argc, &argv, "--iface",    NULL, NULL                       );
   char const * _net_mode  = fd_env_strip_cmdline_cstr ( &argc, &argv, "--net-mode", NULL, "xdp"                      );
-  ulong        pod_sz     = fd_env_strip_cmdline_ulong( &argc, &argv, "--pod-sz",   NULL, 0x10000UL                  );
+  //ulong        pod_sz     = fd_env_strip_cmdline_ulong( &argc, &argv, "--pod-sz",   NULL, 0x10000UL                  );
   char const * _src_ports = fd_env_strip_cmdline_cstr ( &argc, &argv, "--src-port", NULL, "9000"                     );
 
   /* Parse arguments */
@@ -46,15 +46,15 @@ main( int     argc,
   fd_wksp_t * wksp = fd_wksp_new_anonymous( page_sz, page_cnt, fd_shmem_cpu_idx( numa_idx ), "wksp", 0UL );
   FD_TEST( wksp );
 
-  /* Copy config into pod */
+  /* Allocate pod */
 
-  uchar * pod = fd_pod_join( fd_pod_new( fd_wksp_alloc_laddr( wksp, FD_POD_ALIGN, pod_sz, 1UL ), pod_sz ) );
+  //uchar * pod = fd_pod_join( fd_pod_new( fd_wksp_alloc_laddr( wksp, FD_POD_ALIGN, pod_sz, 1UL ), pod_sz ) );
 
-  ulong next_tile_idx = fd_tile_idx() + 1UL;
+  //ulong next_tile_idx = fd_tile_idx() + 1UL;
 
-  char * tile_args[3] = { (char *)wksp, (char *)pod, NULL };
-  FD_TEST( fd_tile_exec_new( 1UL, fdgen_tile_net_xsk_run, 2, tile_args ) );
-  fd_log_sleep( (ulong)1e9 * 7200 );
+  //char * tile_args[3] = { (char *)wksp, (char *)pod, NULL };
+  //FD_TEST( fd_tile_exec_new( 1UL, fdgen_tile_net_xsk_run, 2, tile_args ) );
+  //fd_log_sleep( (ulong)1e9 * 7200 );
 
   /* Clean up */
 
