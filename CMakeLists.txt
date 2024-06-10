@@ -25,14 +25,14 @@ SET_TARGET_PROPERTIES(
     PROPERTIES
     LINKER_LANGUAGE C)
 
-add_executable(fdgen
-    src/app/fdgen_main.c
+add_library(fdgen_lib STATIC
     src/cfg/fdgen_cfg_net.c
     src/cfg/fdgen_cfg_net_socket.c
     src/cfg/fdgen_cfg_net_xdp.c
+    src/cfg/fdgen_netlink.c
     src/tile/net_xsk/fdgen_tile_net_xsk_rx.c)
 
-target_compile_options(fdgen PRIVATE
+add_compile_options(
     -Wall
     -march=native
     -mtune=native
@@ -41,14 +41,24 @@ target_compile_options(fdgen PRIVATE
     -DFD_HAS_X86=1
     -DFD_HAS_SSE=1)
 
-target_include_directories(fdgen SYSTEM PUBLIC
+include_directories(AFTER SYSTEM
     ${FIREDANCER_BUILD}/include)
 
+add_executable(fdgen src/app/fdgen_main.c)
 target_link_libraries(fdgen
-    -pthread
-    -lstdc++
+    fdgen_lib
     fdgen_xdp_ports
     ${FIREDANCER_BUILD}/lib/libfd_quic.a
     ${FIREDANCER_BUILD}/lib/libfd_waltz.a
     ${FIREDANCER_BUILD}/lib/libfd_tango.a
-    ${FIREDANCER_BUILD}/lib/libfd_util.a)
+    ${FIREDANCER_BUILD}/lib/libfd_util.a
+    -pthread
+    -lstdc++)
+
+add_executable(test_tile_net_xsk_rx src/tile/net_xsk/test_tile_net_xsk_rx.c)
+target_link_libraries(test_tile_net_xsk_rx
+    fdgen_lib
+    ${FIREDANCER_BUILD}/lib/libfd_waltz.a
+    ${FIREDANCER_BUILD}/lib/libfd_util.a
+    -pthread
+    -lstdc++)
