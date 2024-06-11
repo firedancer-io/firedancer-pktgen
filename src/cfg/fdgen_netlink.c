@@ -642,7 +642,6 @@ fdgen_ethtool_feature_set( int          netlink,
       FD_LOG_WARNING(( "recv(ethtook -K) failed (%d-%s)", errno, fd_io_strerror( errno ) ));
       return -1;
     }
-    uchar const * end = res_buf + res_sz;
 
     FD_LOG_HEXDUMP_DEBUG(( "ethtool feature set resp", res_buf, res_sz ));
   } while(0);

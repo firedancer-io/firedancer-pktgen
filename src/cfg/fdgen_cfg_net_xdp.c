@@ -1,4 +1,5 @@
 #include "fdgen_cfg_net_xdp.h"
+#include "../xdp/fdgen_xdp_ports.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -30,15 +31,32 @@ struct __attribute__((aligned(8))) bpf_link_create {
 extern uchar const _binary_fdgen_xdp_ports_o_start[];
 extern uchar       _binary_fdgen_xdp_ports_o_size;
 
-fdgen_ports_xdp_t *
-fdgen_ports_xdp_init( fdgen_ports_xdp_t * xdp,
-                      ulong               xsk_max,
-                      uint                ip4,
-                      fdgen_port_range_t  port_range,
-                      uint                if_idx,
-                      uint                if_flags ) {
+static void
+patch_imm( ulong * bpf,
+           ulong   bpf_sz,
+           uint    old,
+           uint    new ) {
+  ulong match_cnt = 0UL;
+  for( ; bpf_sz; bpf_sz -= 8UL, bpf += 1 ) {
+    ulong word = bpf[0];
+    int match = ( (uint)(word>>32) == old );
+    bpf[0] = fd_ulong_if( match, (word & 0xFFFFFFFFUL) | ((ulong)new<<32), word );
+    match_cnt += match;
+  }
+  if( FD_UNLIKELY( match_cnt!=1UL ) ) {
+    FD_LOG_ERR(( "Failed to patch imm 0x%08x (match=%lu)", old, match_cnt ));
+  }
+}
 
-  memset( xdp, 0, sizeof(fdgen_ports_xdp_t) );
+fdgen_xdp_port_redir_t *
+fdgen_xdp_port_redir_init( fdgen_xdp_port_redir_t * xdp,
+                           ulong                    xsk_max,
+                           uint                     ip4,
+                           fdgen_port_range_t       port_range,
+                           uint                     if_idx,
+                           uint                     if_flags ) {
+
+  memset( xdp, 0, sizeof(fdgen_xdp_port_redir_t) );
 
   union bpf_attr attr = {
     .map_type    = BPF_MAP_TYPE_XSKMAP,
@@ -57,28 +75,31 @@ fdgen_ports_xdp_init( fdgen_ports_xdp_t * xdp,
   /* Link BPF bytecode */
 
   ulong elf_sz = (ulong)&_binary_fdgen_xdp_ports_o_size;
-  uchar elf_copy[ 1384 ];
+  uchar elf_copy[ 2048 ];
   assert( elf_sz <= sizeof(elf_copy) );
-  fd_memcpy( elf_copy, _binary_fdgen_xdp_ports_o_start, 1384 );
+  fd_memcpy( elf_copy, _binary_fdgen_xdp_ports_o_start, elf_sz );
 
-  fd_ebpf_sym_t syms[ 4 ] = {
-    { .name = "fd_xdp_xsks",    .value = xsks_fd       },
-    { .name = "fd_xdp_ip",      .value = ip4           },
-    { .name = "fd_xdp_port_lo", .value = port_range.lo },
-    { .name = "fd_xdp_port_hi", .value = port_range.hi }
+  fd_ebpf_sym_t syms[ 1 ] = {
+    { .name = "fd_xdp_xsks", .value = xsks_fd },
   };
   fd_ebpf_link_opts_t opts = {
     .section  = "xdp",
     .sym      = syms,
-    .sym_cnt  = 4
+    .sym_cnt  = 1
   };
   fd_ebpf_link_opts_t * res = fd_ebpf_static_link( &opts, elf_copy, elf_sz );
 
   if( FD_UNLIKELY( !res ) ) {
     FD_LOG_WARNING(( "Failed to link eBPF bytecode" ));
-    fdgen_ports_xdp_fini( xdp );
+    fdgen_xdp_port_redir_fini( xdp );
     return NULL;
   }
+
+  patch_imm( res->bpf, res->bpf_sz, FDGEN_XDP_CANARY_DST_IP4,     ip4           );
+  patch_imm( res->bpf, res->bpf_sz, FDGEN_XDP_CANARY_DST_PORT_LO, port_range.lo );
+  patch_imm( res->bpf, res->bpf_sz, FDGEN_XDP_CANARY_DST_PORT_HI, port_range.hi );
+
+  FD_LOG_HEXDUMP_DEBUG(( "eBPF bytecode", res->bpf, res->bpf_sz ));
 
   /* Load eBPF program into kernel */
 
@@ -100,7 +121,7 @@ fdgen_ports_xdp_init( fdgen_ports_xdp_t * xdp,
     FD_LOG_WARNING(( "bpf(BPF_PROG_LOAD, insns=%p, insn_cnt=%lu) failed (%i-%s)",
                      (void *)res->bpf, res->bpf_sz / 8UL, errno, fd_io_strerror( errno ) ));
     FD_LOG_NOTICE(( "eBPF verifier log:\n%s", ebpf_kern_log ));
-    fdgen_ports_xdp_fini( xdp );
+    fdgen_xdp_port_redir_fini( xdp );
     return NULL;
   }
   xdp->prog_fd = prog_fd;
@@ -117,15 +138,16 @@ fdgen_ports_xdp_init( fdgen_ports_xdp_t * xdp,
   int link_fd = (int)bpf( BPF_LINK_CREATE, fd_type_pun( &link_create ), sizeof(struct bpf_link_create) );
   if( FD_UNLIKELY( link_fd<0 ) ) {
     FD_LOG_WARNING(( "BPF_LINK_CREATE failed (%i-%s)", errno, fd_io_strerror( errno ) ));
-    fdgen_ports_xdp_fini( xdp );
+    fdgen_xdp_port_redir_fini( xdp );
     return NULL;
   }
+  xdp->link_fd = link_fd;
 
   return xdp;
 }
 
 void
-fdgen_ports_xdp_fini( fdgen_ports_xdp_t * xdp ) {
+fdgen_xdp_port_redir_fini( fdgen_xdp_port_redir_t * xdp ) {
 
   if( FD_UNLIKELY( !xdp ) ) return;
 

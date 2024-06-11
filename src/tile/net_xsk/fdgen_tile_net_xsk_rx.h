@@ -1,10 +1,10 @@
 #pragma once
 
-/* The net_xsk_rx receives incoming AF_XDP packets.
+/* The net_xsk_rx tile forwards incoming AF_XDP packets to an mcache.
 
    The kernel-facing side of this tile provides fragment buffers to the
-   AF_XDP socket (via an fd_dcache).  It then polls for any fragments
-   that have incoming packet data.
+   AF_XDP socket (via an fd_dcache).  It does not wake up the kernel
+   (relies on external polling or IRQs).
 
    Incoming fragments are passed on to downstream consumers via fd_tango
    messages (fd_frag_meta_t) without copying the payload.  No special
@@ -27,6 +27,7 @@ struct fdgen_tile_net_xsk_rx_cfg {
   double           tick_per_ns;
   ulong            seq0;       /* first seq to produce */
   ulong            xsk_burst;  /* frags to burst before updating xsk counters */
+  ulong            mtu;
 
   fd_cnc_t *       cnc;
   fd_frag_meta_t * mcache;     /* xsk_rx -> downstream frags */

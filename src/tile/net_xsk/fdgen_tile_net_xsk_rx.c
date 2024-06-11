@@ -36,7 +36,9 @@ static void
 init_rings( fd_frag_meta_t *   mcache,
             uchar *            dcache,
             uchar *            dcache_base,
-            fdgen_xsk_ring_t * fill ) {
+            uchar *            umem_base,
+            fdgen_xsk_ring_t * fill,
+            ulong              mtu ) {
 
   /* Assign frames to mcache (2^n) */
 
@@ -46,18 +48,18 @@ init_rings( fd_frag_meta_t *   mcache,
   for( ulong j=0UL; j<mcache_depth; j++ ) {
     mcache[j].ctl    = fd_frag_meta_ctl( 0, 0, 0, /* err */ 1 );
     mcache[j].chunk  = chunk;
-    chunk           += (FDGEN_XSK_FRAME_SZ >> FD_CHUNK_LG_SZ);
+    chunk           += (mtu >> FD_CHUNK_LG_SZ);
   }
 
   /* Assign frames to fill ring (2^n - 1) */
 
-  ulong   fill_off   = (ulong)fd_chunk_to_laddr( dcache_base, chunk ) - (ulong)fill->mem;
+  ulong   fill_off   = (ulong)fd_chunk_to_laddr( dcache_base, chunk ) - (ulong)umem_base;
   ulong * fill_ring  = fill->frame_ring;
   ulong   fill_depth = fill->depth - 1UL;
 
   for( ulong j=0UL; j<fill_depth; j++ ) {
     fill_ring[j]  = fill_off;
-    fill_off     += FDGEN_XSK_FRAME_SZ;
+    fill_off     += mtu;
   }
 
   FD_COMPILER_MFENCE();
@@ -67,7 +69,7 @@ init_rings( fd_frag_meta_t *   mcache,
 }
 
 int
-fdgen_tile_net_xsk_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
+fdgen_tile_net_xsk_rx_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
 
   if( FD_UNLIKELY( !cfg ) ) { FD_LOG_WARNING(( "NULL cfg" )); return 1; }
 
@@ -85,6 +87,7 @@ fdgen_tile_net_xsk_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
   fdgen_xsk_ring_t rx          = cfg->ring_rx;
   void *           umem_base   = cfg->umem_base;
   ulong            xsk_burst   = cfg->xsk_burst;
+  ulong            mtu         = cfg->mtu;
 
   /* cnc state */
   ulong * cnc_diag;
@@ -136,26 +139,21 @@ fdgen_tile_net_xsk_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
     if( FD_UNLIKELY( !dcache ) ) { FD_LOG_WARNING(( "NULL dcache" )); return 1; }
     if( FD_UNLIKELY( !base   ) ) { FD_LOG_WARNING(( "NULL base"   )); return 1; }
 
-    if( FD_UNLIKELY( !fd_ulong_is_aligned( (ulong)dcache, FDGEN_XSK_FRAME_SZ ) ) ) {
-      FD_LOG_WARNING(( "misaligned dcache" ));
-      return 1;
-    }
-
-    if( FD_UNLIKELY( !fd_ulong_is_aligned( (ulong)base, FDGEN_XSK_FRAME_SZ ) ) ) {
-      FD_LOG_WARNING(( "misaligned base" ));
-      return 1;
-    }
-
     /* check buffer space */
 
     ulong total_depth;
-    if( FD_UNLIKELY( !__builtin_uaddl_overflow( mcache_depth, cfg->ring_fr.depth, &total_depth ) ) ) {
+    if( FD_UNLIKELY( __builtin_uaddl_overflow( mcache_depth, cfg->ring_fr.depth, &total_depth ) ) ) {
       FD_LOG_WARNING(( "mcache+fill depth overflow" ));
       return 1;
     }
 
+    if( FD_UNLIKELY( !fd_ulong_is_aligned( mtu, 2048UL ) ) ) {
+      FD_LOG_WARNING(( "invalid MTU" ));
+      return 1;
+    }
+
     ulong total_bufsz;
-    if( FD_UNLIKELY( !__builtin_umull_overflow( total_depth, FDGEN_XSK_FRAME_SZ, &total_bufsz ) ) ) {
+    if( FD_UNLIKELY( __builtin_umull_overflow( total_depth, mtu, &total_bufsz ) ) ) {
       FD_LOG_WARNING(( "mcache+fill depth overflow" ));
       return 1;
     }
@@ -168,7 +166,17 @@ fdgen_tile_net_xsk_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
 
     /* mcache init */
 
-    init_rings( mcache, dcache, base, &cfg->ring_fr );
+    if( FD_UNLIKELY( !cfg->ring_fr.ptr ) ) {
+      FD_LOG_WARNING(( "NULL fill ring ptr" ));
+      return 1;
+    }
+
+    if( FD_UNLIKELY( !cfg->ring_rx.ptr ) ) {
+      FD_LOG_WARNING(( "NULL rx ring ptr" ));
+      return 1;
+    }
+
+    init_rings( mcache, dcache, base, umem_base, &cfg->ring_fr, mtu );
 
     /* queues init */
 
@@ -249,7 +257,7 @@ fdgen_tile_net_xsk_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
 
     /* Check if there is any new fragment received */
 
-    if( FD_UNLIKELY( rx_cons == rx_prod ) ) {
+    if( FD_UNLIKELY( rx_cons >= rx_prod ) ) {
       rx_prod   = FD_VOLATILE_CONST( rx.prod[0]   );
       fill_cons = FD_VOLATILE_CONST( fill.cons[0] );
       cnc_diag_backp_cnt += (ulong)!cnc_diag_in_backp;

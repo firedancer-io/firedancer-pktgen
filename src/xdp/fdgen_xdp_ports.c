@@ -4,6 +4,7 @@
 
 #include "fd_ebpf_base.h"
 #include <linux/bpf.h>
+#include "fdgen_xdp_ports.h"
 
 /* Metadata ***********************************************************/
 
@@ -22,12 +23,15 @@ static long
                       ulong  flags )
   = (void *)51U;
 
+static long
+(*bpf_trace_printk)( const char * fmt,
+                     uint         fmt_size,
+                     ... )
+  = (void *) 6;
+
 /* eBPF maps **********************************************************/
 
-extern uint   fd_xdp_xsks __attribute__((section("maps")));
-extern uint   fd_xdp_ip;
-extern ushort fd_xdp_port_lo;
-extern ushort fd_xdp_port_hi;
+extern uint fd_xdp_xsks __attribute__((section("maps")));
 
 /* Executable Code ****************************************************/
 
@@ -61,9 +65,9 @@ int fd_xdp_redirect( struct xdp_md *ctx ) {
   ulong udp_dstport = *(ushort *)( udp+2UL    );
         udp_dstport = __builtin_bswap16( udp_dstport );
 
-  if( ip_dstaddr != fd_xdp_ip      ) return XDP_PASS;
-  if( udp_dstport < fd_xdp_port_lo ) return XDP_PASS;
-  if( udp_dstport > fd_xdp_port_hi ) return XDP_PASS;
+  if( ip_dstaddr != FDGEN_XDP_CANARY_DST_IP4     ) return XDP_PASS;
+  if( udp_dstport < FDGEN_XDP_CANARY_DST_PORT_LO ) return XDP_PASS;
+  if( udp_dstport > FDGEN_XDP_CANARY_DST_PORT_HI ) return XDP_PASS;
 
   /* Look up the interface queue to find the socket to forward to */
   uint socket_key = ctx->rx_queue_index;
