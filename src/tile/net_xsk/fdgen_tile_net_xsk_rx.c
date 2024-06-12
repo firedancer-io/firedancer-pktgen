@@ -9,6 +9,21 @@
 #include <firedancer/tango/mcache/fd_mcache.h>
 #include <firedancer/tango/dcache/fd_dcache.h>
 #include <firedancer/tango/tempo/fd_tempo.h>
+#include <firedancer/waltz/xdp/fd_xsk.h>
+
+/* Address translation between XSK UMEM and local */
+
+FD_FN_CONST static inline ulong
+fd_laddr_to_umem( void * umem_base,
+                  void * laddr ) {
+  return (ulong)laddr - (ulong)umem_base;
+}
+
+FD_FN_CONST static inline void *
+fd_umem_to_laddr( void * umem_base,
+                  ulong  umem_off ) {
+  return (void *)( umem_base + umem_off );
+}
 
 /* Address translation between fd_tango and XSK UMEM */
 
@@ -16,33 +31,38 @@ FD_FN_CONST static inline ulong
 fd_chunk_to_umem( void * chunk0,
                   void * umem_base,
                   ulong  chunk ) {
-  ulong laddr = (ulong)fd_chunk_to_laddr( chunk0, chunk );
-  return laddr - (ulong)umem_base;
+  return fd_laddr_to_umem( umem_base, fd_chunk_to_laddr( chunk0, chunk ) );
 }
 
 FD_FN_CONST static inline ulong
 fd_umem_to_chunk( void * chunk0,
                   void * umem_base,
                   ulong  umem_off ) {
-  ulong laddr = (ulong)umem_base + umem_off;
-  return fd_laddr_to_chunk( chunk0, (void *)laddr );
+  return fd_laddr_to_chunk( chunk0, fd_umem_to_laddr( umem_base, umem_off ) );
 }
 
 /* init_rings sets up the initial allocation of frames between mcache
    and xsk fill ring.  This is essential as the message queues also
-   serve as FIFO allocators. */
+   serve as FIFO allocators.
+
+   mcache:    ring that will own initial 'published' frames.
+   fill:      ring that will own initial 'free' frames.
+   chunk0:    base address of the fd_tango MPMC session that mcache belongs to
+   umem_base: base address of the AF_XDP UMEM region
+   mtu:       AF_XDP frame size
+   frame0:    pointer to frame in dcache with lowest address */
 
 static void
 init_rings( fd_frag_meta_t *   mcache,
-            uchar *            dcache,
-            uchar *            dcache_base,
-            uchar *            umem_base,
             fdgen_xsk_ring_t * fill,
+            uchar *            chunk0,
+            uchar *            umem_base,
+            uchar *            frame0,
             ulong              mtu ) {
 
   /* Assign frames to mcache (2^n) */
 
-  uint  chunk        = (uint)fd_laddr_to_chunk( dcache_base, dcache );
+  uint  chunk        = (uint)fd_laddr_to_chunk( chunk0, frame0 );
   ulong mcache_depth = fd_mcache_depth( mcache );
 
   for( ulong j=0UL; j<mcache_depth; j++ ) {
@@ -53,7 +73,7 @@ init_rings( fd_frag_meta_t *   mcache,
 
   /* Assign frames to fill ring (2^n - 1) */
 
-  ulong   fill_off   = (ulong)fd_chunk_to_laddr( dcache_base, chunk ) - (ulong)umem_base;
+  ulong   fill_off   = fd_chunk_to_umem( chunk0, umem_base, chunk );
   ulong * fill_ring  = fill->frame_ring;
   ulong   fill_depth = fill->depth - 1UL;
 
@@ -86,6 +106,7 @@ fdgen_tile_net_xsk_rx_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
   fdgen_xsk_ring_t fill        = cfg->ring_fr;
   fdgen_xsk_ring_t rx          = cfg->ring_rx;
   void *           umem_base   = cfg->umem_base;
+  void *           frame0      = cfg->frame0;
   ulong            xsk_burst   = cfg->xsk_burst;
   ulong            mtu         = cfg->mtu;
 
@@ -147,7 +168,7 @@ fdgen_tile_net_xsk_rx_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
       return 1;
     }
 
-    if( FD_UNLIKELY( !fd_ulong_is_aligned( mtu, 2048UL ) ) ) {
+    if( FD_UNLIKELY( !mtu || !fd_ulong_is_aligned( mtu, 2048UL ) ) ) {
       FD_LOG_WARNING(( "invalid MTU" ));
       return 1;
     }
@@ -176,7 +197,17 @@ fdgen_tile_net_xsk_rx_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
       return 1;
     }
 
-    init_rings( mcache, dcache, base, umem_base, &cfg->ring_fr, mtu );
+    if( FD_UNLIKELY( !umem_base || !fd_ulong_is_aligned( (ulong)umem_base, FD_XSK_UMEM_ALIGN ) ) ) {
+      FD_LOG_WARNING(( "invalid UMEM base address" ));
+      return 1;
+    }
+
+    if( FD_UNLIKELY( frame0 < umem_base || !fd_ulong_is_aligned( (ulong)frame0, FD_CHUNK_ALIGN ) ) ) {
+      FD_LOG_WARNING(( "invalid frame0 address" ));
+      return 1;
+    }
+
+    init_rings( mcache, &cfg->ring_fr, base, umem_base, frame0, mtu );
 
     /* queues init */
 

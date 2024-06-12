@@ -75,19 +75,16 @@ fdgen_tile_net_xsk_poll_run( fdgen_tile_net_xsk_poll_cfg_t * cfg ) {
       then = now + (long)fd_tempo_async_reload( rng, async_min );
     }
 
-    //struct pollfd polls[1] = {{
-    //  .fd     = xsk_fd,
-    //  .events = POLLIN
-    //}};
-    ///* int poll_res = */ poll( polls, 1, 0 );
-    //if( FD_UNLIKELY( poll_res<0 ) ) {
-    //  FD_LOG_WARNING(( "poll(AF_XDP) failed (%d-%s)", errno, fd_io_strerror( errno ) ));
-    //  fail = 1;
-    //  break;
-    //}
-    struct msghdr _ignored[ 1 ] = { 0 };
-    recvmsg( xsk_fd, _ignored, MSG_DONTWAIT );
-    sendto( xsk_fd, NULL, 0, MSG_DONTWAIT, NULL, 0 );
+    struct pollfd polls[1] = {{
+      .fd     = xsk_fd,
+      .events = POLLIN
+    }};
+    int poll_res = poll( polls, 1, 0 );
+    if( FD_UNLIKELY( poll_res<0 ) ) {
+      FD_LOG_WARNING(( "poll(AF_XDP) failed (%d-%s)", errno, fd_io_strerror( errno ) ));
+      fail = 1;
+      break;
+    }
 
     now = fd_tickcount();
   }

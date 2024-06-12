@@ -22,7 +22,9 @@
 #include <firedancer/tango/tempo/fd_tempo.h>
 #include <firedancer/waltz/ebpf/fd_ebpf.h>
 #include <firedancer/waltz/xdp/fd_xsk.h>
+#include <firedancer/util/net/fd_eth.h>
 #include <firedancer/util/net/fd_ip4.h>
+#include <firedancer/util/net/fd_udp.h>
 
 static fd_cnc_t *       g_rx_cnc;
 static fd_cnc_t *       g_poll_cnc;
@@ -128,7 +130,9 @@ poll_tile_main( int     argc,
     .dcache = g_dcache,
     .base   = g_dcache,
 
-    .umem_base =  g_dcache
+    .umem_base = (void *)dcache_lo,
+    .frame0    = (void *)dcache_lo,  /* use entire UMEM */
+    .mtu       = g_mtu,
   }};
 
   FD_LOG_INFO(( "Joining XDP rings" ));
@@ -195,13 +199,101 @@ poll_tile_main( int     argc,
     .xsk_fd      = xsk_fd
   }};
 
-  fdgen_tile_net_xsk_poll_run( poll_cfg );
-  FD_LOG_ERR(( "poll end" ));
+  int rc = fdgen_tile_net_xsk_poll_run( poll_cfg );
 
   fd_tile_exec_delete( rx_tile, NULL );
   close( xsk_fd );
   fd_rng_delete( fd_rng_leave( rng ) );
   fdgen_xdp_port_redir_fini( redir );
+  return rc;
+}
+
+static int
+test_tile_main( int     argc,
+                char ** argv ) {
+
+  int udp_sock = socket( AF_INET, SOCK_DGRAM, 0 );
+  FD_TEST( udp_sock>=0 );
+
+  uint udp_dst_port = 9000;
+  struct sockaddr_in sock_dst = {
+    .sin_family      = AF_INET,
+    .sin_port        = (ushort)fd_ushort_bswap( udp_dst_port ),
+    .sin_addr.s_addr = FD_IP4_ADDR( 10, 0, 0, 9 )
+  };
+
+  fd_frag_meta_t * mcache = g_mcache;
+  uchar *          base   = g_dcache;
+
+  double tick_per_ns = fd_tempo_tick_per_ns( NULL );
+
+  ulong seq   = fd_mcache_seq0 ( mcache );
+  ulong depth = fd_mcache_depth( mcache );
+
+  fd_frag_meta_t const * mline;
+  ulong                  seq_found;
+  ulong                  diff;
+
+  /* 5 second warmup time */
+  ulong warmup_deadline = fd_tickcount() + (ulong)( tick_per_ns * 5e9 );
+  for(;;) {
+
+    /* Send a packet */
+    if( sendto( udp_sock, "hello", 5UL, MSG_DONTWAIT,
+                fd_type_pun_const( &sock_dst ), sizeof(struct sockaddr_in) )<0 ) {
+      int err = errno;
+      if( FD_UNLIKELY( err!=EAGAIN && err!=EWOULDBLOCK ) ) {
+        FD_LOG_ERR(( "sendto failed (%i-%s)", err, fd_io_strerror( err ) ));
+      }
+      continue;
+    }
+
+    /* Poll for response */
+    seq_found = fd_mcache_query( mcache, depth, seq );
+    if( FD_UNLIKELY( fd_seq_ge( seq_found, seq ) ) ) {
+      seq = seq_found;
+      break;
+    }
+
+    if( fd_tickcount() > warmup_deadline ) {
+      FD_LOG_ERR(( "Timed out while waiting for first packet" ));
+    }
+  }
+
+  /* Verify packet content */
+
+  fd_frag_meta_t meta[1];
+  uchar          pkt[1024];
+  for(;;) {
+    ulong async_rem = 1UL;
+    FD_MCACHE_WAIT( meta, mline, seq_found, diff, async_rem, mcache, depth, seq );
+    if( FD_LIKELY( seq_found==seq ) ) {
+      fd_memcpy( pkt, fd_chunk_to_laddr_const( base, meta->chunk ), meta->sz );
+      if( FD_UNLIKELY( fd_frag_meta_seq_query( mline ) != seq ) ) {
+        continue;
+      }
+      break;
+    }
+    seq = seq_found;
+  }
+
+  ulong sz_expected = sizeof(fd_eth_hdr_t) + sizeof(fd_ip4_hdr_t) + sizeof(fd_udp_hdr_t) + 5UL;
+  FD_TEST( meta->sz==sz_expected );
+
+  fd_eth_hdr_t * eth_hdr = (fd_eth_hdr_t *)pkt;
+  fd_ip4_hdr_t * ip4_hdr = (fd_ip4_hdr_t *)(eth_hdr + 1);
+  fd_udp_hdr_t * udp_hdr = (fd_udp_hdr_t *)(ip4_hdr + 1);
+  uchar *        payload = (uchar *)(udp_hdr + 1);
+
+  fd_udp_hdr_bswap( udp_hdr );
+  FD_TEST( udp_hdr->net_dport == udp_dst_port );
+  FD_TEST( udp_hdr->net_len   == sizeof(fd_udp_hdr_t) + 5UL );
+
+  FD_TEST( 0==memcmp( payload, "hello", 5UL ) );
+
+  FD_LOG_NOTICE(( "Received a packet" ));
+
+  close( udp_sock );
   return 0;
 }
 
@@ -270,7 +362,8 @@ main( int     argc,
   g_mcache = mcache;
 
   if( FD_UNLIKELY( mtu!=2048 && mtu!=4096 ) ) FD_LOG_ERR(( "invalid mtu" ));
-  ulong   dcache_data_sz = mtu * fd_ulong_max( g_ring_rx_depth, g_ring_fr_depth );
+  ulong   dcache_depth   = depth + fd_ulong_max( g_ring_rx_depth, g_ring_fr_depth );
+  ulong   dcache_data_sz = mtu * dcache_depth;
   void *  dcache_mem     = fd_wksp_alloc_laddr( wksp, FD_DCACHE_ALIGN, fd_dcache_footprint( dcache_data_sz, 0UL ) + FD_XSK_UMEM_ALIGN, 1UL );
   uchar * dcache         = fd_dcache_join( fd_dcache_new( dcache_mem, dcache_data_sz, 0UL ) );
   FD_TEST( dcache );
@@ -283,24 +376,23 @@ main( int     argc,
 
   FD_TEST( 0==setns( veth_env->params[0].netns, CLONE_NEWNET ) );
 
-  /* Send packets */
+  /* Run test */
 
-  int udp_sock = socket( AF_INET, SOCK_DGRAM, 0 );
-  FD_TEST( udp_sock>=0 );
-
-  struct sockaddr_in sock_dst = {
-    .sin_family      = AF_INET,
-    .sin_port        = (ushort)fd_ushort_bswap( 9000 ),
-    .sin_addr.s_addr = FD_IP4_ADDR( 10, 0, 0, 9 )
-  };
-
-  for(;;) {
-    sendto( udp_sock, "hello", 5UL, 0, fd_type_pun_const( &sock_dst ), sizeof(struct sockaddr_in) );
-  }
+  int res = test_tile_main( 0, NULL );
 
   FD_LOG_INFO(( "Cleaning up" ));
 
-  close( udp_sock );
+  FD_TEST( !fd_cnc_open( poll_cnc ) );
+  FD_TEST( !fd_cnc_open( rx_cnc   ) );
+
+  fd_cnc_signal( poll_cnc, FD_CNC_SIGNAL_HALT );
+  fd_cnc_signal( rx_cnc,   FD_CNC_SIGNAL_HALT );
+
+  FD_TEST( fd_cnc_wait( poll_cnc, FD_CNC_SIGNAL_HALT, (long)5e9, NULL )==FD_CNC_SIGNAL_BOOT );
+  FD_TEST( fd_cnc_wait( rx_cnc,   FD_CNC_SIGNAL_HALT, (long)5e9, NULL )==FD_CNC_SIGNAL_BOOT );
+
+  fd_cnc_close( poll_cnc );
+  fd_cnc_close( rx_cnc   );
 
   fd_tile_exec_delete( poll_tile, NULL );
 
@@ -316,5 +408,5 @@ main( int     argc,
 
   FD_LOG_NOTICE(( "pass" ));
   fd_halt();
-  return 0;
+  return res;
 }

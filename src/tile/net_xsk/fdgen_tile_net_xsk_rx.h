@@ -38,6 +38,7 @@ struct fdgen_tile_net_xsk_rx_cfg {
   fdgen_xsk_ring_t ring_fr;    /* xsk_rx -> kernel frag buffers */
   fdgen_xsk_ring_t ring_rx;    /* kernel -> kernel frags */
   uchar *          umem_base;
+  uchar *          frame0;
 
 };
 
