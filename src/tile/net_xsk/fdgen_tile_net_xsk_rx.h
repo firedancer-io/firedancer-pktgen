@@ -12,8 +12,6 @@
 
    Does not yet support fragmentation (AF_XDP multi-buffer) */
 
-#include <firedancer/util/fd_util_base.h>
-#include <firedancer/tango/fd_tango_base.h>
 #include <firedancer/tango/cnc/fd_cnc.h>
 #include "../../xdp/fdgen_xsk.h"
 
@@ -36,7 +34,7 @@ struct fdgen_tile_net_xsk_rx_cfg {
   fd_rng_t *       rng;
 
   fdgen_xsk_ring_t ring_fr;    /* xsk_rx -> kernel frag buffers */
-  fdgen_xsk_ring_t ring_rx;    /* kernel -> kernel frags */
+  fdgen_xsk_ring_t ring_rx;    /* kernel -> xsk_rx frags */
   uchar *          umem_base;
   uchar *          frame0;
 

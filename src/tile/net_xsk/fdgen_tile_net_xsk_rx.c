@@ -11,36 +11,6 @@
 #include <firedancer/tango/tempo/fd_tempo.h>
 #include <firedancer/waltz/xdp/fd_xsk.h>
 
-/* Address translation between XSK UMEM and local */
-
-FD_FN_CONST static inline ulong
-fd_laddr_to_umem( void * umem_base,
-                  void * laddr ) {
-  return (ulong)laddr - (ulong)umem_base;
-}
-
-FD_FN_CONST static inline void *
-fd_umem_to_laddr( void * umem_base,
-                  ulong  umem_off ) {
-  return (void *)( umem_base + umem_off );
-}
-
-/* Address translation between fd_tango and XSK UMEM */
-
-FD_FN_CONST static inline ulong
-fd_chunk_to_umem( void * chunk0,
-                  void * umem_base,
-                  ulong  chunk ) {
-  return fd_laddr_to_umem( umem_base, fd_chunk_to_laddr( chunk0, chunk ) );
-}
-
-FD_FN_CONST static inline ulong
-fd_umem_to_chunk( void * chunk0,
-                  void * umem_base,
-                  ulong  umem_off ) {
-  return fd_laddr_to_chunk( chunk0, fd_umem_to_laddr( umem_base, umem_off ) );
-}
-
 /* init_rings sets up the initial allocation of frames between mcache
    and xsk fill ring.  This is essential as the message queues also
    serve as FIFO allocators.
