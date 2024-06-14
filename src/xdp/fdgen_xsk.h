@@ -5,6 +5,13 @@
 
 #include <firedancer/tango/fd_tango_base.h>
 
+/* FDGEN_XSK_POLL_MODE_{...} are available poll modes */
+
+#define FDGEN_XSK_POLL_MODE_NONE      (0)
+#define FDGEN_XSK_POLL_MODE_WAKEUP    (1)
+#define FDGEN_XSK_POLL_MODE_BUSY_SYNC (2)
+#define FDGEN_XSK_POLL_MODE_BUSY_EXT  (3)
+
 /* FDGEN_XSK_FRAME_SZ is the size of each AF_XDP frame used throughout
    fdgen.  DO NOT EDIT. */
 

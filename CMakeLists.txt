@@ -15,7 +15,9 @@ set(FDGEN_CFLAGS
     -DFD_HAS_ATOMIC=1
     -DFD_HAS_THREADS=1
     -DFD_HAS_X86=1
-    -DFD_HAS_SSE=1)
+    -DFD_HAS_SSE=1
+    -DFD_HAS_DOUBLE=1
+    -DFD_HAS_INT128=1)
 
 # Package fdgen_xdp_ports.o into a C library
 

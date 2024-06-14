@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <linux/if_xdp.h>
+#include <poll.h>
 
 #include <firedancer/tango/fd_tango_base.h>
 #include <firedancer/tango/cnc/fd_cnc.h>
@@ -58,6 +59,16 @@ init_rings( fd_frag_meta_t *   mcache,
 
 }
 
+static void
+xsk_poll_recv( int xsk_fd ) {
+  struct msghdr _ignored[ 1 ] = { 0 };
+  if( FD_UNLIKELY( -1==recvmsg( xsk_fd, _ignored, MSG_DONTWAIT ) ) ) {
+    if( FD_UNLIKELY( errno!=EAGAIN ) ) {
+      FD_LOG_WARNING(( "xsk recvmsg failed (%i-%s)", errno, fd_io_strerror( errno ) ));
+    }
+  }
+}
+
 int
 fdgen_tile_net_xsk_rx_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
 
@@ -82,7 +93,7 @@ fdgen_tile_net_xsk_rx_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
   ulong            total_depth;
 
   /* cnc state */
-  ulong * cnc_diag;
+  fdgen_tile_net_xsk_rx_diag_t * cnc_diag;
   ulong   cnc_diag_in_backp;      /* is the run loop currently backpressured by fill ring, in [0,1] */
   ulong   cnc_diag_backp_cnt;     /* Accumulates number of transitions of tile to backpressured between housekeeping events */
   ulong   cnc_diag_pcap_pub_cnt;  /* Accumulates number of XDP frags published between housekeeping events */
@@ -127,10 +138,10 @@ fdgen_tile_net_xsk_rx_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
     /* cnc state init */
 
     if( FD_UNLIKELY( !cnc ) ) { FD_LOG_WARNING(( "NULL cnc" )); return 1; }
-    if( FD_UNLIKELY( fd_cnc_app_sz( cnc )<64UL ) ) { FD_LOG_WARNING(( "cnc app sz must be at least 64" )); return 1; }
+    if( FD_UNLIKELY( fd_cnc_app_sz( cnc )<sizeof(fdgen_tile_net_xsk_rx_diag_t) ) ) { FD_LOG_WARNING(( "undersz cnc diag" )); return 1; }
     if( FD_UNLIKELY( fd_cnc_signal_query( cnc )!=FD_CNC_SIGNAL_BOOT ) ) { FD_LOG_WARNING(( "already booted" )); return 1; }
 
-    cnc_diag = (ulong *)fd_cnc_app_laddr( cnc );
+    cnc_diag = fd_cnc_app_laddr( cnc );
 
     cnc_diag_in_backp      = 1UL;
     cnc_diag_backp_cnt     = 0UL;
@@ -198,8 +209,8 @@ fdgen_tile_net_xsk_rx_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
 
     /* queues init */
 
-    if( FD_UNLIKELY( xsk_burst==0UL || xsk_burst > fill.depth/2 ) ) {
-      FD_LOG_WARNING(( "invalid xsk_burst: %lu not in [0,%u)", xsk_burst, fill.depth/2 ));
+    if( FD_UNLIKELY( xsk_burst==0UL ) ) {
+      FD_LOG_WARNING(( "invalid xsk_burst" ));
       return 1;
     }
 
@@ -222,6 +233,13 @@ fdgen_tile_net_xsk_rx_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
     async_min = fd_tempo_async_min( lazy, 1UL /*event_cnt*/, (float)tick_per_ns );
     if( FD_UNLIKELY( !async_min ) ) { FD_LOG_WARNING(( "bad lazy" )); return 1; }
 
+    /* Initial poll */
+
+    if( cfg->poll_mode==FDGEN_XSK_POLL_MODE_WAKEUP ) {
+      sendto( cfg->xsk_fd, NULL, 0, MSG_DONTWAIT, NULL, 0 );
+      XSK_SYNC();
+    }
+
   } while(0);
 
   FD_LOG_INFO(( "Running AF_XDP recv (orig %lu)", orig ));
@@ -233,24 +251,7 @@ fdgen_tile_net_xsk_rx_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
     /* Do housekeeping at a low rate in the background */
 
     if( FD_UNLIKELY( (now-then)>=0L ) ) {
-
-      FD_COMPILER_MFENCE();
-      fill_cons      = FD_VOLATILE_CONST( fill_cons_p[0] );
-      rx_prod        = FD_VOLATILE_CONST( rx_prod_p  [0] );
-      FD_COMPILER_MFENCE();
-
-      uint fill_avail = fill_prod-fill_cons;
-      uint rx_avail   = rx_prod  -rx_cons;
-
-      FD_LOG_DEBUG(( "fill=%8x/%8x (%8x) rx=%8x/%8x (%8x) TOT=%u",
-                     fill_cons, fill_prod, fill_avail,
-                     rx_cons,   rx_prod,   rx_avail,
-                     fill_avail + rx_avail ));
-
-      if( FD_UNLIKELY( fill_avail + rx_avail > fill.depth + 1 ) ) {
-        FD_LOG_ERR(( "Frames spawned out of thin air (%u+%u>%u)",
-                     fill_avail, rx_avail, fill.depth ));
-      }
+      XSK_SYNC();
 
       /* Send synchronization info */
       fd_mcache_seq_update( sync, seq );
@@ -258,10 +259,14 @@ fdgen_tile_net_xsk_rx_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
       /* Send diagnostic info */
       fd_cnc_heartbeat( cnc, now );
       FD_COMPILER_MFENCE();
-      cnc_diag[ FD_CNC_DIAG_IN_BACKP        ]  = cnc_diag_in_backp;
-      cnc_diag[ FD_CNC_DIAG_BACKP_CNT       ] += cnc_diag_backp_cnt;
-      cnc_diag[ FD_NET_XSK_CNC_DIAG_PUB_CNT ] += cnc_diag_pcap_pub_cnt;
-      cnc_diag[ FD_NET_XSK_CNC_DIAG_PUB_SZ  ] += cnc_diag_pcap_pub_sz;
+      cnc_diag->in_backp   = cnc_diag_in_backp;
+      cnc_diag->backp_cnt += cnc_diag_backp_cnt;
+      cnc_diag->pub_cnt   += cnc_diag_pcap_pub_cnt;
+      cnc_diag->pub_sz    += cnc_diag_pcap_pub_sz;
+      cnc_diag->fr_cons    = fill_cons;
+      cnc_diag->fr_prod    = fill_prod;
+      cnc_diag->rx_cons    = rx_cons;
+      cnc_diag->rx_prod    = rx_prod;
       FD_COMPILER_MFENCE();
       cnc_diag_backp_cnt    = 0UL;
       cnc_diag_pcap_pub_cnt = 0UL;
@@ -278,26 +283,33 @@ fdgen_tile_net_xsk_rx_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
       then = now + (long)fd_tempo_async_reload( rng, async_min );
     }
 
-    /* Update caches */
-
-    if( seq >= seq_flush ) {
+    if( FD_VOLATILE_CONST( rx.flags[0] ) & XDP_RING_NEED_WAKEUP ) {
       XSK_SYNC();
-      seq_flush = seq + xsk_burst;
+      xsk_poll_recv( cfg->xsk_fd );
+      XSK_SYNC();
     }
 
     /* Check if there is any new fragment received */
 
     int avail = (int)( rx_prod - rx_cons );
-    if( avail < (fill.depth >> 3) && cfg->poll_mode ) {
-      struct msghdr _ignored[ 1 ] = { 0 };
-      if( FD_UNLIKELY( -1==recvmsg( cfg->xsk_fd, _ignored, MSG_DONTWAIT ) ) ) {
-        if( FD_UNLIKELY( errno!=EAGAIN ) ) {
-          FD_LOG_WARNING(( "xsk recvmsg failed (%i-%s)", errno, fd_io_strerror( errno ) ));
-        }
+    if( FD_UNLIKELY( avail<=0 ) ) {
+
+      if( cfg->poll_mode == FDGEN_XSK_POLL_MODE_BUSY_SYNC ) {
+        FD_COMPILER_MFENCE();
+        FD_VOLATILE( rx_cons_p  [0] ) = rx_cons;
+        FD_VOLATILE( fill_prod_p[0] ) = fill_prod;
+        FD_COMPILER_MFENCE();
+
+        xsk_poll_recv( cfg->xsk_fd );
+
+        FD_COMPILER_MFENCE();
+        fill_cons = FD_VOLATILE_CONST( fill_cons_p[0] );
+        rx_prod   = FD_VOLATILE_CONST( rx_prod_p  [0] );
+        FD_COMPILER_MFENCE();
+      } else {
+        XSK_SYNC();
       }
-    }
-    if( avail<=0 ) {
-      XSK_SYNC();
+
       cnc_diag_backp_cnt += (ulong)!cnc_diag_in_backp;
       cnc_diag_in_backp   = 1;
       FD_SPIN_PAUSE();
@@ -306,19 +318,13 @@ fdgen_tile_net_xsk_rx_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
     }
     cnc_diag_in_backp = 0;
 
-    struct xdp_desc * rx_frag = rx.packet_ring + (rx_cons & (rx.depth-1));
+    struct xdp_desc * rx_frag = __builtin_assume_aligned( rx.packet_ring + (rx_cons & (rx.depth-1)), 16UL );
 
     /* Check if there is sufficient fill ring space */
 
     if( FD_UNLIKELY( fill_prod - fill_cons >= fill.depth ) ) {
-      if( cfg->poll_mode ) {
-        struct msghdr _ignored[ 1 ] = { 0 };
-        if( FD_UNLIKELY( -1==recvmsg( cfg->xsk_fd, _ignored, MSG_DONTWAIT ) ) ) {
-          if( FD_UNLIKELY( errno!=EAGAIN ) ) {
-            FD_LOG_WARNING(( "xsk recvmsg failed (%i-%s)", errno, fd_io_strerror( errno ) ));
-          }
-        }
-      }
+      fill_cons = FD_VOLATILE_CONST( fill_cons_p[0] );
+      FD_VOLATILE( rx_cons_p[0] ) = rx_cons;
       now = fd_tickcount();
       continue;
     }
@@ -330,7 +336,7 @@ fdgen_tile_net_xsk_rx_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
     fd_frag_meta_t const * mline = mcache + fd_mcache_line_idx( seq, mcache_depth );
 
     uint  free_chunk    = mline->chunk;
-    ulong free_umem_off = fd_chunk_to_umem( base, umem_base, free_chunk );
+    ulong free_umem_off = fd_chunk_to_umem( base, base, free_chunk );
           free_umem_off = fd_ulong_align_dn( free_umem_off, 2048UL );
 
     /* Create mcache entry */

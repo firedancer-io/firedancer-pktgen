@@ -70,11 +70,10 @@ poll_tile_main( int     argc,
 
   fdgen_xdp_port_redir_t _redir[1];
   fdgen_xdp_port_redir_t * redir = fdgen_xdp_port_redir_init(
-      _redir, 1UL,
-      FD_IP4_ADDR( 10, 0, 0, 9 ),
-      (fdgen_port_range_t){ 9000, 9100 },
-      if_idx,
-      0 );
+     _redir, 1UL,
+     FD_IP4_ADDR( 10, 0, 0, 9 ),
+     (fdgen_port_range_t){ 9000, 9100 },
+     if_idx, 0 );
   FD_TEST( redir );
 
   FD_LOG_INFO(( "Creating AF_XDP socket" ));

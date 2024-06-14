@@ -1,9 +1,19 @@
 #pragma once
 
+#include <firedancer/util/fd_util_base.h>
+#include <immintrin.h>
+
 /* fdgen_tile_net_xsk.h contains common XSK tile definitions */
 
-#define FD_CNC_DIAG_IN_BACKP        (0UL)
-#define FD_CNC_DIAG_BACKP_CNT       (1UL)
-#define FD_NET_XSK_CNC_DIAG_PUB_CNT (2UL)
-#define FD_NET_XSK_CNC_DIAG_PUB_SZ  (3UL)
-/* total CNC_DIAG sz 16 bytes */
+struct fdgen_tile_net_xsk_rx_diag {
+  ulong in_backp;
+  ulong backp_cnt;
+  ulong pub_cnt;
+  ulong pub_sz;
+  uint  fr_cons;  /* TODO make this atomic __m128i */
+  uint  fr_prod;
+  uint  rx_cons;
+  uint  rx_prod;
+};
+
+typedef struct fdgen_tile_net_xsk_rx_diag fdgen_tile_net_xsk_rx_diag_t;
