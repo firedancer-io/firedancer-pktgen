@@ -15,6 +15,7 @@ struct fdgen_tile_net_xsk_poll_cfg {
   long       lazy;
   double     tick_per_ns;
   int        xsk_fd;
+  int        poll_mode;  /* 0=poll, 1={recv,send}msg */
 };
 
 typedef struct fdgen_tile_net_xsk_poll_cfg fdgen_tile_net_xsk_poll_cfg_t;
@@ -22,6 +23,6 @@ typedef struct fdgen_tile_net_xsk_poll_cfg fdgen_tile_net_xsk_poll_cfg_t;
 FD_PROTOTYPES_BEGIN
 
 int
-fdgen_tile_net_xsk_poll_run( fdgen_tile_net_xsk_poll_cfg_t * cfg );
+fdgen_tile_net_xsk_poll_run( fdgen_tile_net_xsk_poll_cfg_t const * cfg );
 
 FD_PROTOTYPES_END

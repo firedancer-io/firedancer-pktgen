@@ -8,7 +8,7 @@
 #include <firedancer/tango/tempo/fd_tempo.h>
 
 int
-fdgen_tile_net_xsk_poll_run( fdgen_tile_net_xsk_poll_cfg_t * cfg ) {
+fdgen_tile_net_xsk_poll_run( fdgen_tile_net_xsk_poll_cfg_t const * cfg ) {
 
   if( FD_UNLIKELY( !cfg ) ) { FD_LOG_WARNING(( "NULL cfg" )); return 1; }
 
@@ -18,6 +18,7 @@ fdgen_tile_net_xsk_poll_run( fdgen_tile_net_xsk_poll_cfg_t * cfg ) {
   fd_rng_t * rng         = cfg->rng;
   long       lazy        = cfg->lazy;
   double     tick_per_ns = cfg->tick_per_ns;
+  int        poll_mode   = !!cfg->poll_mode;
 
   /* housekeeping state */
   ulong async_min; /* minimum number of ticks between processing a housekeeping event, positive integer power of 2 */
@@ -75,15 +76,34 @@ fdgen_tile_net_xsk_poll_run( fdgen_tile_net_xsk_poll_cfg_t * cfg ) {
       then = now + (long)fd_tempo_async_reload( rng, async_min );
     }
 
-    struct pollfd polls[1] = {{
-      .fd     = xsk_fd,
-      .events = POLLIN
-    }};
-    int poll_res = poll( polls, 1, 0 );
-    if( FD_UNLIKELY( poll_res<0 ) ) {
-      FD_LOG_WARNING(( "poll(AF_XDP) failed (%d-%s)", errno, fd_io_strerror( errno ) ));
-      fail = 1;
-      break;
+    if( poll_mode ) {
+
+      struct msghdr _ignored[ 1 ] = { 0 };
+      if( FD_UNLIKELY( -1==recvmsg( xsk_fd, _ignored, MSG_DONTWAIT ) ) ) {
+        if( FD_UNLIKELY( errno!=EAGAIN ) ) {
+          FD_LOG_WARNING(( "xsk recvmsg failed xsk_fd=%d (%i-%s)", xsk_fd, errno, fd_io_strerror( errno ) ));
+        }
+      }
+
+      if( FD_UNLIKELY( -1==sendto( xsk_fd, NULL, 0, MSG_DONTWAIT, NULL, 0 ) ) ) {
+        if( FD_UNLIKELY( errno!=EAGAIN ) ) {
+          FD_LOG_WARNING(( "xsk sendto failed xsk_fd=%d (%i-%s)", xsk_fd, errno, fd_io_strerror( errno ) ));
+        }
+      }
+
+    } else {
+
+      struct pollfd polls[1] = {{
+        .fd     = xsk_fd,
+        .events = POLLIN
+      }};
+      int poll_res = poll( polls, 1, 0 );
+      if( FD_UNLIKELY( poll_res<0 ) ) {
+        FD_LOG_WARNING(( "poll(AF_XDP) failed (%d-%s)", errno, fd_io_strerror( errno ) ));
+        fail = 1;
+        break;
+      }
+
     }
 
     now = fd_tickcount();
