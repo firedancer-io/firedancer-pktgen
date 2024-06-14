@@ -166,3 +166,85 @@ fdgen_xdp_port_redir_fini( fdgen_xdp_port_redir_t * xdp ) {
     xdp->xsk_map_fd = -1;
   }
 }
+
+
+fdgen_xdp_port_redir_t *
+fdgen_xdp_full_redir_init( fdgen_xdp_port_redir_t * redir,
+                           ulong                    xsk_max,
+                           uint                     if_idx,
+                           uint                     if_flags ) {
+
+  memset( redir, 0, sizeof(fdgen_xdp_port_redir_t) );
+
+  union bpf_attr attr = {
+    .map_type    = BPF_MAP_TYPE_XSKMAP,
+    .key_size    = 4U,
+    .value_size  = 4U,
+    .max_entries = xsk_max,
+    .map_name    = "fd_xdp_xsks"
+  };
+  int xsks_fd = (int)bpf( BPF_MAP_CREATE, &attr, sizeof(union bpf_attr) );
+  if( FD_UNLIKELY( xsks_fd<0 ) ) {
+    FD_LOG_WARNING(( "bpf(BPF_MAP_CREATE) failed (%i-%s)", errno, fd_io_strerror( errno ) ));
+    return NULL;
+  }
+  redir->xsk_map_fd = xsks_fd;
+
+  /* Load eBPF program into kernel */
+
+  #define EBPF_KERN_LOG_BUFSZ (32768UL)
+  static FD_TL char ebpf_kern_log[ EBPF_KERN_LOG_BUFSZ ];
+
+  struct bpf_insn bpf_prog[] = {
+    { BPF_LD    | BPF_IMM  | BPF_DW, 1, 1, 0, xsks_fd },
+    { 0,                             0, 0, 0,       0 },
+    { BPF_ALU64 | BPF_MOV  | BPF_K,  2, 0, 0,       0 },
+    { BPF_ALU64 | BPF_MOV  | BPF_K,  3, 0, 0,       0 },
+    { BPF_JMP   | BPF_CALL | BPF_K,  0, 0, 0,      51 },
+    { BPF_JMP   | BPF_EXIT | BPF_K,  0, 0, 0,       0 }
+  };
+
+  attr = (union bpf_attr) {
+    .prog_type = BPF_PROG_TYPE_XDP,
+    .insn_cnt  = (uint)( sizeof(bpf_prog) / sizeof(ulong) ),
+    .insns     = (ulong)bpf_prog,
+    .license   = (ulong)"Apache-2.0",
+    /* Verifier logs */
+    .log_level = 6,
+    .log_size  = EBPF_KERN_LOG_BUFSZ,
+    .log_buf   = (ulong)ebpf_kern_log
+  };
+  int prog_fd = (int)bpf( BPF_PROG_LOAD, &attr, sizeof(union bpf_attr) );
+  if( FD_UNLIKELY( prog_fd<0 ) ) {
+    FD_LOG_WARNING(( "bpf(BPF_PROG_LOAD, insns=%p, insn_cnt=%u) failed (%i-%s)",
+                     (void *)attr.insns, attr.insn_cnt, errno, fd_io_strerror( errno ) ));
+    FD_LOG_NOTICE(( "eBPF verifier log:\n%s", ebpf_kern_log ));
+    fdgen_xdp_port_redir_fini( redir );
+    return NULL;
+  }
+  redir->prog_fd = prog_fd;
+
+  /* Install program to device */
+
+  struct bpf_link_create link_create = {
+    .prog_fd        = (uint)prog_fd,
+    .target_ifindex = if_idx,
+    .attach_type    = BPF_XDP,
+    .flags          = if_flags
+  };
+
+  int link_fd = (int)bpf( BPF_LINK_CREATE, fd_type_pun( &link_create ), sizeof(struct bpf_link_create) );
+  if( FD_UNLIKELY( link_fd<0 ) ) {
+    FD_LOG_WARNING(( "BPF_LINK_CREATE failed (%i-%s)", errno, fd_io_strerror( errno ) ));
+    fdgen_xdp_port_redir_fini( redir );
+    return NULL;
+  }
+  redir->link_fd = link_fd;
+
+  return redir;
+}
+
+void
+fdgen_xdp_full_redir_fini( fdgen_xdp_port_redir_t * xdp ) {
+  fdgen_xdp_port_redir_fini( xdp );
+}

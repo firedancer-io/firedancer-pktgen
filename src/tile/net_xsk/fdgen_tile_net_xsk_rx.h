@@ -38,6 +38,9 @@ struct fdgen_tile_net_xsk_rx_cfg {
   uchar *          umem_base;
   uchar *          frame0;
 
+  int              xsk_fd;
+  int              poll_mode;  /* 0=no, 1=busy_poll */
+
 };
 
 typedef struct fdgen_tile_net_xsk_rx_cfg fdgen_tile_net_xsk_rx_cfg_t;

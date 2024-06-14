@@ -2,6 +2,7 @@
 #include "fdgen_tile_net_xsk_rx.h"
 
 #include <assert.h>
+#include <errno.h>
 #include <linux/if_xdp.h>
 
 #include <firedancer/tango/fd_tango_base.h>
@@ -32,24 +33,23 @@ init_rings( fd_frag_meta_t *   mcache,
 
   /* Assign frames to mcache (2^n) */
 
-  uint  chunk        = (uint)fd_laddr_to_chunk( chunk0, frame0 );
+  uchar * frame = frame0;
   ulong mcache_depth = fd_mcache_depth( mcache );
 
   for( ulong j=0UL; j<mcache_depth; j++ ) {
     mcache[j].ctl    = fd_frag_meta_ctl( 0, 0, 0, /* err */ 1 );
-    mcache[j].chunk  = chunk;
-    chunk           += (mtu >> FD_CHUNK_LG_SZ);
+    mcache[j].chunk  = fd_laddr_to_chunk( chunk0, frame );
+    frame           += mtu;
   }
 
   /* Assign frames to fill ring (2^n - 1) */
 
-  ulong   fill_off   = fd_chunk_to_umem( chunk0, umem_base, chunk );
   ulong * fill_ring  = fill->frame_ring;
   ulong   fill_depth = fill->depth - 1UL;
 
   for( ulong j=0UL; j<fill_depth; j++ ) {
-    fill_ring[j]  = fill_off;
-    fill_off     += mtu;
+    fill_ring[j]  = fd_laddr_to_umem( umem_base, frame );;
+    frame        += mtu;
   }
 
   FD_COMPILER_MFENCE();
@@ -79,6 +79,7 @@ fdgen_tile_net_xsk_rx_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
   void *           frame0      = cfg->frame0;
   ulong            xsk_burst   = cfg->xsk_burst;
   ulong            mtu         = cfg->mtu;
+  ulong            total_depth;
 
   /* cnc state */
   ulong * cnc_diag;
@@ -95,12 +96,29 @@ fdgen_tile_net_xsk_rx_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
   /* housekeeping state */
   ulong async_min; /* minimum number of ticks between processing a housekeeping event, positive integer power of 2 */
 
+  /* XSK queue pointers */
+  uint       volatile * fill_prod_p;
+  uint const volatile * fill_cons_p;
+  uint const volatile * rx_prod_p;
+  uint       volatile * rx_cons_p;
+
   /* cached XSK queue states */
   uint   fill_prod;  /* owned */
   uint   fill_cons;  /* stale */
   uint   rx_prod;    /* stale */
   uint   rx_cons;    /* owned */
   ulong  seq_flush;  /* flush dirty & prefetch read cache at this seq */
+
+# define XSK_SYNC()                  \
+  do {                               \
+    FD_COMPILER_MFENCE();            \
+    FD_VOLATILE( rx_cons_p  [0] ) = rx_cons;        \
+    FD_COMPILER_MFENCE();            \
+    FD_VOLATILE( fill_prod_p[0] ) = fill_prod;      \
+    fill_cons      = FD_VOLATILE_CONST( fill_cons_p[0] ); \
+    rx_prod        = FD_VOLATILE_CONST( rx_prod_p  [0] ); \
+    FD_COMPILER_MFENCE();            \
+  } while(0)
 
   do {
 
@@ -132,7 +150,6 @@ fdgen_tile_net_xsk_rx_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
 
     /* check buffer space */
 
-    ulong total_depth;
     if( FD_UNLIKELY( __builtin_uaddl_overflow( mcache_depth, cfg->ring_fr.depth, &total_depth ) ) ) {
       FD_LOG_WARNING(( "mcache+fill depth overflow" ));
       return 1;
@@ -186,10 +203,15 @@ fdgen_tile_net_xsk_rx_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
       return 1;
     }
 
-    fill_prod = FD_VOLATILE_CONST( fill.prod[0] );
-    fill_cons = FD_VOLATILE_CONST( fill.cons[0] );
-    rx_prod   = FD_VOLATILE_CONST( rx.prod[0]   );
-    rx_cons   = FD_VOLATILE_CONST( rx.cons[0]   );
+    fill_prod_p = fill.prod;
+    fill_cons_p = fill.cons;
+    rx_prod_p   = rx.prod;
+    rx_cons_p   = rx.cons;
+
+    fill_prod = fill_prod_p[0];
+    fill_cons = fill_cons_p[0];
+    rx_prod   = rx_prod_p  [0];
+    rx_cons   = rx_cons_p  [0];
     seq_flush = seq + xsk_burst;
 
     /* housekeeping init */
@@ -212,13 +234,23 @@ fdgen_tile_net_xsk_rx_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
 
     if( FD_UNLIKELY( (now-then)>=0L ) ) {
 
-      /* Update XSK caches */
       FD_COMPILER_MFENCE();
-      FD_VOLATILE( fill.prod[0] ) = fill_prod;
-      FD_VOLATILE( rx.cons[0]   ) = rx_cons;
-      fill_cons = FD_VOLATILE_CONST( fill.cons[0] );
-      rx_prod   = FD_VOLATILE_CONST( rx.prod[0]   );
+      fill_cons      = FD_VOLATILE_CONST( fill_cons_p[0] );
+      rx_prod        = FD_VOLATILE_CONST( rx_prod_p  [0] );
       FD_COMPILER_MFENCE();
+
+      uint fill_avail = fill_prod-fill_cons;
+      uint rx_avail   = rx_prod  -rx_cons;
+
+      FD_LOG_DEBUG(( "fill=%8x/%8x (%8x) rx=%8x/%8x (%8x) TOT=%u",
+                     fill_cons, fill_prod, fill_avail,
+                     rx_cons,   rx_prod,   rx_avail,
+                     fill_avail + rx_avail ));
+
+      if( FD_UNLIKELY( fill_avail + rx_avail > fill.depth + 1 ) ) {
+        FD_LOG_ERR(( "Frames spawned out of thin air (%u+%u>%u)",
+                     fill_avail, rx_avail, fill.depth ));
+      }
 
       /* Send synchronization info */
       fd_mcache_seq_update( sync, seq );
@@ -249,18 +281,23 @@ fdgen_tile_net_xsk_rx_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
     /* Update caches */
 
     if( seq >= seq_flush ) {
-      FD_VOLATILE( fill.prod[0] ) = fill_prod;
-      FD_VOLATILE( rx.cons[0]   ) = rx_cons;
-      rx_prod   = FD_VOLATILE_CONST( rx.prod[0]   );
-      fill_cons = FD_VOLATILE_CONST( fill.cons[0] );
+      XSK_SYNC();
       seq_flush = seq + xsk_burst;
     }
 
     /* Check if there is any new fragment received */
 
-    if( FD_UNLIKELY( rx_cons >= rx_prod ) ) {
-      rx_prod   = FD_VOLATILE_CONST( rx.prod[0]   );
-      fill_cons = FD_VOLATILE_CONST( fill.cons[0] );
+    int avail = (int)( rx_prod - rx_cons );
+    if( avail < (fill.depth >> 3) && cfg->poll_mode ) {
+      struct msghdr _ignored[ 1 ] = { 0 };
+      if( FD_UNLIKELY( -1==recvmsg( cfg->xsk_fd, _ignored, MSG_DONTWAIT ) ) ) {
+        if( FD_UNLIKELY( errno!=EAGAIN ) ) {
+          FD_LOG_WARNING(( "xsk recvmsg failed (%i-%s)", errno, fd_io_strerror( errno ) ));
+        }
+      }
+    }
+    if( avail<=0 ) {
+      XSK_SYNC();
       cnc_diag_backp_cnt += (ulong)!cnc_diag_in_backp;
       cnc_diag_in_backp   = 1;
       FD_SPIN_PAUSE();
@@ -273,14 +310,20 @@ fdgen_tile_net_xsk_rx_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
 
     /* Check if there is sufficient fill ring space */
 
-    uint next_fill_prod = fill_prod + 1U;
-    if( FD_UNLIKELY( next_fill_prod >= fill_cons + fill.depth ) ) {
-      fill_cons = FD_VOLATILE_CONST( fill.cons[0] );
+    if( FD_UNLIKELY( fill_prod - fill_cons >= fill.depth ) ) {
+      if( cfg->poll_mode ) {
+        struct msghdr _ignored[ 1 ] = { 0 };
+        if( FD_UNLIKELY( -1==recvmsg( cfg->xsk_fd, _ignored, MSG_DONTWAIT ) ) ) {
+          if( FD_UNLIKELY( errno!=EAGAIN ) ) {
+            FD_LOG_WARNING(( "xsk recvmsg failed (%i-%s)", errno, fd_io_strerror( errno ) ));
+          }
+        }
+      }
       now = fd_tickcount();
       continue;
     }
 
-    ulong * fill_line = fill.frame_ring + (fill_prod & (fill.depth-1));
+    ulong volatile * fill_line = fill.frame_ring + (fill_prod & (fill.depth-1));
 
     /* Catch the frag we are about to replace */
 
@@ -288,6 +331,7 @@ fdgen_tile_net_xsk_rx_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
 
     uint  free_chunk    = mline->chunk;
     ulong free_umem_off = fd_chunk_to_umem( base, umem_base, free_chunk );
+          free_umem_off = fd_ulong_align_dn( free_umem_off, 2048UL );
 
     /* Create mcache entry */
 
@@ -302,13 +346,15 @@ fdgen_tile_net_xsk_rx_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
 
     /* Write frag */
 
-    fd_mcache_publish( mcache, mcache_depth, seq, sig, chunk, sz, ctl, tsorig, tspub );
+    fd_mcache_publish_sse( mcache, mcache_depth, seq, sig, chunk, sz, ctl, tsorig, tspub );
+    FD_COMPILER_MFENCE();
     fill_line[0] = free_umem_off;
+    FD_COMPILER_MFENCE();
 
     /* Windup for the next iteration and accumulate diagnostics */
 
-    fill_prod = next_fill_prod;
-    rx_cons   = rx_cons + 1U;
+    rx_cons   = rx_cons   + 1U;
+    fill_prod = fill_prod + 1U;
     seq       = fd_seq_inc( seq, 1UL );
     cnc_diag_pcap_pub_cnt++;
     cnc_diag_pcap_pub_sz += sz;

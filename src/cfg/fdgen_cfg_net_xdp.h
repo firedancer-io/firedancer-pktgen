@@ -29,4 +29,13 @@ fdgen_xdp_port_redir_init( fdgen_xdp_port_redir_t * redir,
 void
 fdgen_xdp_port_redir_fini( fdgen_xdp_port_redir_t * xdp );
 
+fdgen_xdp_port_redir_t *
+fdgen_xdp_full_redir_init( fdgen_xdp_port_redir_t * redir,
+                           ulong                    xsk_max,
+                           uint                     if_idx,
+                           uint                     if_flags );
+
+void
+fdgen_xdp_full_redir_fini( fdgen_xdp_port_redir_t * xdp );
+
 FD_PROTOTYPES_END
