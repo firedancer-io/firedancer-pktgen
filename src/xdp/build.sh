@@ -13,6 +13,7 @@ set -x
 clang                     \
   -std=c17                \
   -target bpf             \
+  -mcpu=v3                \
   -O2                     \
   -fno-stack-protector    \
   -c -o fdgen_xdp_ports.o \
