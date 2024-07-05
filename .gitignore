@@ -1,7 +1,9 @@
 .cache/
 .vscode/
 build/
+/build*
 /compile_commands.json
 perf.data*
 CMakeCache.txt
 CMakeFiles/
+/.clangd

@@ -234,7 +234,7 @@ main( int     argc,
     .poll_mode   = poll_mode
   }};
 
-  FD_LOG_INFO(( "Joining XDP rings" ));
+  FD_LOG_INFO(( "Joining XDP rings (ring_fr.depth=%lu ring_rx.depth=%lu)", fr_depth, rx_depth ));
 
   rx_cfg->ring_fr.depth  = fr_depth;
   rx_cfg->ring_rx.depth  = rx_depth;
@@ -266,7 +266,7 @@ main( int     argc,
     .sxdp_family   = PF_XDP,
     .sxdp_ifindex  = if_idx,
     .sxdp_queue_id = 0U,
-    .sxdp_flags    = 0
+    .sxdp_flags    = XDP_ZEROCOPY
   };
   if( poll_mode==FDGEN_XSK_POLL_MODE_WAKEUP ) {
     sa.sxdp_flags |= XDP_USE_NEED_WAKEUP;
