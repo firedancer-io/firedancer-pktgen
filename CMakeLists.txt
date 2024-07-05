@@ -52,8 +52,8 @@ add_library(fdgen_lib STATIC
 include_directories(AFTER SYSTEM
     ${FIREDANCER_BUILD}/include)
 
-add_executable(fdgen src/app/fdgen_main.c)
-target_link_libraries(fdgen
+add_executable(fdgen_rxdrop src/app/fdgen_rxdrop.c)
+target_link_libraries(fdgen_rxdrop
     fdgen_lib
     fdgen_xdp_ports
     ${FIREDANCER_BUILD}/lib/libfd_quic.a

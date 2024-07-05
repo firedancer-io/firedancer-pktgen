@@ -118,7 +118,6 @@ fdgen_tile_net_xsk_rx_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
   uint   fill_cons;  /* stale */
   uint   rx_prod;    /* stale */
   uint   rx_cons;    /* owned */
-  ulong  seq_flush;  /* flush dirty & prefetch read cache at this seq */
 
 # define XSK_SYNC()                  \
   do {                               \
@@ -223,7 +222,6 @@ fdgen_tile_net_xsk_rx_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
     fill_cons = fill_cons_p[0];
     rx_prod   = rx_prod_p  [0];
     rx_cons   = rx_cons_p  [0];
-    seq_flush = seq + xsk_burst;
 
     /* housekeeping init */
 
