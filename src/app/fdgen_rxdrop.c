@@ -63,12 +63,10 @@ main( int     argc,
   ulong        numa_idx         = fd_env_strip_cmdline_ulong( &argc, &argv, "--numa-idx",         NULL, fd_shmem_numa_idx(cpu_idx) );
   char const * iface            = fd_env_strip_cmdline_cstr ( &argc, &argv, "--iface",            NULL, NULL                       );
   char const * _net_mode        = fd_env_strip_cmdline_cstr ( &argc, &argv, "--net-mode",         NULL, "xdp"                      );
-  //ulong        pod_sz         = fd_env_strip_cmdline_ulong( &argc, &argv, "--pod-sz",           NULL, 0x10000UL                  );
   char const * _src_ports       = fd_env_strip_cmdline_cstr ( &argc, &argv, "--src-port",         NULL, "9000"                     );
-  ulong        busy_poll_usecs  = fd_env_strip_cmdline_ulong( &argc, &argv, "--busy-poll-usecs",  NULL,     50UL                   );
-  ulong        xsk_burst        = fd_env_strip_cmdline_ulong( &argc, &argv, "--xsk-burst",        NULL,     64UL                   );
   ulong        rx_depth         = fd_env_strip_cmdline_ulong( &argc, &argv, "--rx-depth",         NULL,   4096UL                   );
   ulong        busy_poll_budget = fd_env_strip_cmdline_ulong( &argc, &argv, "--busy-poll-budget", NULL,   2048UL                   );
+  ulong        busy_poll_usecs  = fd_env_strip_cmdline_ulong( &argc, &argv, "--busy-poll-usecs",  NULL,     50UL                   );
   char const * poll_mode_cstr   = fd_env_strip_cmdline_cstr ( &argc, &argv, "--poll-mode",        NULL, "wakeup"                   );
 
   int poll_mode = 0;
@@ -86,9 +84,6 @@ main( int     argc,
 
   FD_LOG_NOTICE(( "--rx-depth %lu", rx_depth ));
   FD_LOG_NOTICE(( "--poll-mode %s", poll_mode_cstr ));
-  if( poll_mode==FDGEN_XSK_POLL_MODE_WAKEUP || poll_mode==FDGEN_XSK_POLL_MODE_BUSY_EXT ) {
-    FD_LOG_NOTICE(( "--xsk-burst %lu", xsk_burst ));
-  }
   if( poll_mode==FDGEN_XSK_POLL_MODE_BUSY_SYNC || poll_mode==FDGEN_XSK_POLL_MODE_BUSY_EXT ) {
     FD_LOG_NOTICE(( "--busy-poll-usecs %lu",  busy_poll_usecs ));
     FD_LOG_NOTICE(( "--busy-poll-budget %lu", busy_poll_budget ));
@@ -218,7 +213,6 @@ main( int     argc,
     .umem_base = (void *)dcache_lo,
     .frame0    = (void *)dcache_lo,  /* use entire UMEM */
     .mtu       = mtu,
-    .xsk_burst = fd_ulong_if( FDGEN_XSK_POLL_MODE_BUSY_SYNC, UINT_MAX, xsk_burst ),
     .lazy      = fd_tempo_lazy_default( fr_depth ),
 
     .xsk_fd    = xsk_fd,

@@ -88,7 +88,6 @@ fdgen_tile_net_xsk_rx_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
   fdgen_xsk_ring_t rx          = cfg->ring_rx;
   void *           umem_base   = cfg->umem_base;
   void *           frame0      = cfg->frame0;
-  ulong            xsk_burst   = cfg->xsk_burst;
   ulong            mtu         = cfg->mtu;
   ulong            total_depth;
 
@@ -207,11 +206,6 @@ fdgen_tile_net_xsk_rx_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
     init_rings( mcache, &cfg->ring_fr, base, umem_base, frame0, mtu );
 
     /* queues init */
-
-    if( FD_UNLIKELY( xsk_burst==0UL ) ) {
-      FD_LOG_WARNING(( "invalid xsk_burst" ));
-      return 1;
-    }
 
     fill_prod_p = fill.prod;
     fill_cons_p = fill.cons;
