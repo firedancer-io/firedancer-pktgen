@@ -47,7 +47,8 @@ add_library(fdgen_lib STATIC
     src/cfg/fdgen_cfg_net_xdp.c
     src/cfg/fdgen_netlink.c
     src/tile/net_xsk/fdgen_tile_net_xsk_poll.c
-    src/tile/net_xsk/fdgen_tile_net_xsk_rx.c)
+    src/tile/net_xsk/fdgen_tile_net_xsk_rx.c
+    src/tile/udp_flood/fdgen_tile_udp_flood.c)
 
 include_directories(AFTER SYSTEM
     ${FIREDANCER_BUILD}/include)
@@ -57,6 +58,16 @@ target_link_libraries(fdgen_rxdrop
     fdgen_lib
     fdgen_xdp_ports
     ${FIREDANCER_BUILD}/lib/libfd_quic.a
+    ${FIREDANCER_BUILD}/lib/libfd_waltz.a
+    ${FIREDANCER_BUILD}/lib/libfd_tango.a
+    ${FIREDANCER_BUILD}/lib/libfd_util.a
+    -pthread
+    -lstdc++)
+
+add_executable(fdgen_iavf src/app/fdgen_iavf.c)
+target_link_libraries(fdgen_iavf
+    fdgen_lib
+    fdgen_xdp_ports
     ${FIREDANCER_BUILD}/lib/libfd_waltz.a
     ${FIREDANCER_BUILD}/lib/libfd_tango.a
     ${FIREDANCER_BUILD}/lib/libfd_util.a
