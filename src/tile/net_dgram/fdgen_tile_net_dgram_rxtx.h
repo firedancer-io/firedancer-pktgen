@@ -43,13 +43,13 @@ union fdgen_tile_net_dgram_epoll_data {
 typedef union fdgen_tile_net_dgram_epoll_data fdgen_tile_net_dgram_epoll_data_t;
 
 struct fdgen_tile_net_dgram_rxtx_diag {
-  ulong in_backp;
   ulong backp_cnt;
   ulong rx_cnt;
   ulong rx_sz;
   ulong tx_pub_cnt;
   ulong tx_pub_sz;
   ulong tx_filt_cnt;
+  ulong overnp_cnt;
 };
 
 typedef struct fdgen_tile_net_dgram_rxtx_diag fdgen_tile_net_dgram_rxtx_diag_t;
@@ -74,7 +74,8 @@ struct fdgen_tile_net_dgram_rxtx_cfg {
   long  tx_batch_timeout;  /* sendmmsg flush timeout (ticks) */
   ulong rx_batch_max;      /* recvmmsg batch lmit */
 
-  int epoll_fd;
+  int epoll_fd;  /* level-triggered epoll with fdgen_tile_net_dgram_epoll_data_t user datas */
+  int send_fd;   /* unbound AF_INET SOCK_DGRAM socket */
 
   uchar * scratch;
   ulong   scratch_sz;
@@ -84,6 +85,15 @@ struct fdgen_tile_net_dgram_rxtx_cfg {
 typedef struct fdgen_tile_net_dgram_rxtx_cfg fdgen_tile_net_dgram_rxtx_cfg_t;
 
 FD_PROTOTYPES_BEGIN
+
+FD_FN_CONST ulong
+fdgen_tile_net_dgram_scratch_align( void );
+
+FD_FN_CONST ulong
+fdgen_tile_net_dgram_scratch_footprint( ulong rx_depth,
+                                        ulong rx_batch_max,
+                                        ulong tx_batch_max,
+                                        ulong mtu ) ;
 
 int
 fdgen_tile_net_dgram_rxtx_run( fdgen_tile_net_dgram_rxtx_cfg_t * cfg );

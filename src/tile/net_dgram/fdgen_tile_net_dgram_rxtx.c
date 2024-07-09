@@ -54,33 +54,56 @@
 
 #define HEADROOM (42UL)  /* Ethernet header, IPv4 header, UDP header */
 
+#define TILE_ALIGN (128UL)
+
+FD_FN_CONST ulong
+fdgen_tile_net_dgram_scratch_align( void ) {
+  return TILE_ALIGN;  /* arbitrarily large */
+}
+
+FD_FN_CONST ulong
+fdgen_tile_net_dgram_scratch_footprint( ulong rx_depth,
+                                        ulong rx_batch_max,
+                                        ulong tx_batch_max,
+                                        ulong mtu ) {
+  ulong rx_slot_max = rx_depth + 2*rx_batch_max;
+  ulong l = FD_LAYOUT_INIT;
+  l = FD_LAYOUT_APPEND( l, alignof(struct iovec),            tx_batch_max*sizeof(struct iovec)            );
+  l = FD_LAYOUT_APPEND( l, alignof(struct mmsghdr),          tx_batch_max*sizeof(struct mmsghdr)          );
+  l = FD_LAYOUT_APPEND( l, FD_CHUNK_ALIGN,                   tx_batch_max*mtu                             );
+  l = FD_LAYOUT_APPEND( l, alignof(struct sockaddr_storage), rx_slot_max *sizeof(struct sockaddr_storage) );
+  l = FD_LAYOUT_APPEND( l, alignof(struct iovec),            rx_slot_max *sizeof(struct iovec)            );
+  l = FD_LAYOUT_APPEND( l, alignof(struct mmsghdr),          rx_slot_max *sizeof(struct mmsghdr)          );
+  return FD_LAYOUT_FINI( l, TILE_ALIGN );
+}
+
 int
 fdgen_tile_net_dgram_rxtx_run( fdgen_tile_net_dgram_rxtx_cfg_t * cfg ) {
 
   if( FD_UNLIKELY( !cfg ) ) { FD_LOG_WARNING(( "NULL cfg" )); return 1; }
 
   FD_SCRATCH_ALLOC_INIT( scratch, cfg->scratch );
-  ulong scratch_end = (ulong)cfg->scratch + cfg->scratch_sz;
 
   /* load config */
 
-  fd_cnc_t *       cnc         = cfg->cnc;
   ulong            orig        = cfg->orig;
+  long             lazy        = cfg->lazy;
+  double           tick_per_ns = cfg->tick_per_ns;
+  ulong            seq0        = cfg->seq0;
+  ulong            mtu         = cfg->mtu;
+  fd_cnc_t *       cnc         = cfg->cnc;
   fd_rng_t *       rng         = cfg->rng;
   fd_frag_meta_t * tx_mcache   = cfg->tx_mcache;
   uchar *          tx_base     = cfg->tx_base;
   fd_frag_meta_t * rx_mcache   = cfg->rx_mcache;
   uchar *          rx_dcache   = cfg->rx_dcache;
   uchar *          rx_base     = cfg->rx_base;
-  long             lazy        = cfg->lazy;
-  double           tick_per_ns = cfg->tick_per_ns;
   int              epoll_fd    = cfg->epoll_fd;
-  ulong            mtu         = cfg->mtu;
+  int              send_fd     = cfg->send_fd;
 
   /* cnc state */
   fdgen_tile_net_dgram_rxtx_diag_t * cnc_diag;
-  ulong   cnc_diag_in_backp;      /* is the run loop currently backpressured by fill ring, in [0,1] */
-  ulong   cnc_diag_backp_cnt;     /* Accumulates number of transitions of tile to backpressured between housekeeping events */
+  ulong   cnc_diag_backp_cnt;
   ulong   cnc_diag_tx_pub_cnt;
   ulong   cnc_diag_tx_pub_sz;
   ulong   cnc_diag_tx_filt_cnt;
@@ -133,7 +156,6 @@ fdgen_tile_net_dgram_rxtx_run( fdgen_tile_net_dgram_rxtx_cfg_t * cfg ) {
 
     cnc_diag = fd_cnc_app_laddr( cnc );
 
-    cnc_diag_in_backp    = 1UL;
     cnc_diag_backp_cnt   = 0UL;
     cnc_diag_overnp_cnt  = 0UL;
     cnc_diag_tx_pub_cnt  = 0UL;
@@ -160,12 +182,17 @@ fdgen_tile_net_dgram_rxtx_run( fdgen_tile_net_dgram_rxtx_cfg_t * cfg ) {
 
     tx_batch_cnt = 0U;
     struct iovec * tx_iov;
-    tx_iov   = FD_SCRATCH_ALLOC_APPEND( scratch, alignof(struct iovec),   sizeof(struct iovec)  *tx_batch_max );
-    tx_batch = FD_SCRATCH_ALLOC_APPEND( scratch, alignof(struct mmsghdr), sizeof(struct mmsghdr)*tx_batch_max );
+    uchar *        tx_buf;
+    tx_iov   = FD_SCRATCH_ALLOC_APPEND( scratch, alignof(struct iovec),   tx_batch_max*sizeof(struct iovec)   );
+    tx_batch = FD_SCRATCH_ALLOC_APPEND( scratch, alignof(struct mmsghdr), tx_batch_max*sizeof(struct mmsghdr) );
+    tx_buf   = FD_SCRATCH_ALLOC_APPEND( scratch, FD_CHUNK_ALIGN,          tx_batch_max*mtu                    );
     fd_memset( tx_batch, 0, sizeof(struct mmsghdr)*tx_batch_max );
     for( ulong j=0UL; j<tx_batch_max; j++ ) {
       tx_batch[ j ].msg_hdr.msg_iov    = tx_iov + j;
       tx_batch[ j ].msg_hdr.msg_iovlen = 1;
+      tx_iov  [ j ].iov_base           = tx_buf;
+      tx_iov  [ j ].iov_len            = mtu;
+      tx_buf += mtu;
     }
 
     /* rx frag stream init */
@@ -173,12 +200,12 @@ fdgen_tile_net_dgram_rxtx_run( fdgen_tile_net_dgram_rxtx_cfg_t * cfg ) {
     if( FD_UNLIKELY( !rx_mcache ) ) { FD_LOG_WARNING(( "NULL rx_mcache")); return 1; }
     rx_depth = fd_mcache_depth    ( rx_mcache );
     rx_sync  = fd_mcache_seq_laddr( rx_mcache );
-    rx_seq   = cfg->seq0;
+    rx_seq   = seq0;
 
     if( FD_UNLIKELY( !rx_dcache ) ) { FD_LOG_WARNING(( "NULL dcache" )); return 1; }
     if( FD_UNLIKELY( !rx_base   ) ) { FD_LOG_WARNING(( "NULL base"   )); return 1; }
 
-    /* rx batching init */
+    /* rx batch init */
 
     ulong rx_slot_max;
     rx_batch_max = cfg->rx_batch_max;
@@ -226,20 +253,27 @@ fdgen_tile_net_dgram_rxtx_run( fdgen_tile_net_dgram_rxtx_cfg_t * cfg ) {
 
     /* Do housekeeping at a low rate in the background */
 
-    if( FD_UNLIKELY( (now-then)>=0L ) ) {
+    if( FD_UNLIKELY( (now-then)>=0L || tx_batch_cnt==tx_batch_max ) ) {
+      /* Flush TX batch */
+      if( tx_batch_cnt ) {
+        long send_cnt = sendmmsg( send_fd, tx_batch, tx_batch_cnt, MSG_DONTWAIT );
+        if( send_cnt!=(long)tx_batch_cnt ) cnc_diag_backp_cnt++;
+        tx_batch_cnt = 0U;
+      }
+
       /* Send synchronization info */
       fd_mcache_seq_update( rx_sync, rx_seq );
 
       /* Send diagnostic info */
       fd_cnc_heartbeat( cnc, now );
       FD_COMPILER_MFENCE();
-      cnc_diag->in_backp     = cnc_diag_in_backp;
       cnc_diag->backp_cnt   += cnc_diag_backp_cnt;
       cnc_diag->tx_pub_cnt  += cnc_diag_tx_pub_cnt;
       cnc_diag->tx_pub_sz   += cnc_diag_tx_pub_sz;
       cnc_diag->tx_filt_cnt += cnc_diag_tx_filt_cnt;
       cnc_diag->rx_cnt      += cnc_diag_rx_cnt;
       cnc_diag->rx_sz       += cnc_diag_rx_sz;
+      cnc_diag->overnp_cnt  += cnc_diag_overnp_cnt;
       FD_COMPILER_MFENCE();
       cnc_diag_backp_cnt   = 0UL;
       cnc_diag_tx_pub_cnt  = 0UL;
@@ -247,6 +281,7 @@ fdgen_tile_net_dgram_rxtx_run( fdgen_tile_net_dgram_rxtx_cfg_t * cfg ) {
       cnc_diag_tx_filt_cnt = 0UL;
       cnc_diag_rx_cnt      = 0UL;
       cnc_diag_rx_sz       = 0UL;
+      cnc_diag_overnp_cnt  = 0UL;
 
       /* Receive command-and-control signals */
       ulong s = fd_cnc_signal_query( cnc );
@@ -305,7 +340,8 @@ fdgen_tile_net_dgram_rxtx_run( fdgen_tile_net_dgram_rxtx_cfg_t * cfg ) {
         continue;
       }
 
-      /* Speculative copy */
+      /* Speculative copy
+         FIXME Add support for reliable mode and remove this copy */
       FD_COMPILER_MFENCE();
       memcpy( &saddr4->sin_addr.s_addr, &ip4_hdr->daddr_c, 4UL );
       saddr4->sin_port = udp_hdr->net_dport;
