@@ -46,6 +46,7 @@ add_library(fdgen_lib STATIC
     src/cfg/fdgen_cfg_net_socket.c
     src/cfg/fdgen_cfg_net_xdp.c
     src/cfg/fdgen_netlink.c
+    src/tile/net_dgram/fdgen_tile_net_dgram_rxtx.c
     src/tile/net_xsk/fdgen_tile_net_xsk_poll.c
     src/tile/net_xsk/fdgen_tile_net_xsk_rx.c
     src/tile/udp_flood/fdgen_tile_udp_flood.c)

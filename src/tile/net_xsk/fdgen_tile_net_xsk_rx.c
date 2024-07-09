@@ -95,8 +95,8 @@ fdgen_tile_net_xsk_rx_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
   fdgen_tile_net_xsk_rx_diag_t * cnc_diag;
   ulong   cnc_diag_in_backp;      /* is the run loop currently backpressured by fill ring, in [0,1] */
   ulong   cnc_diag_backp_cnt;     /* Accumulates number of transitions of tile to backpressured between housekeeping events */
-  ulong   cnc_diag_pcap_pub_cnt;  /* Accumulates number of XDP frags published between housekeeping events */
-  ulong   cnc_diag_pcap_pub_sz;   /* Accumulates XDP payload bytes publised between housekeeping events */
+  ulong   cnc_diag_pub_cnt;       /* Accumulates number of XDP frags published between housekeeping events */
+  ulong   cnc_diag_pub_sz;        /* Accumulates XDP payload bytes publised between housekeeping events */
 
   /* out frag stream state */
   ulong   mcache_depth; /* ==fd_mcache_depth( mcache ), depth of the mcache / positive integer power of 2 */
@@ -141,10 +141,10 @@ fdgen_tile_net_xsk_rx_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
 
     cnc_diag = fd_cnc_app_laddr( cnc );
 
-    cnc_diag_in_backp      = 1UL;
-    cnc_diag_backp_cnt     = 0UL;
-    cnc_diag_pcap_pub_cnt  = 0UL;
-    cnc_diag_pcap_pub_sz   = 0UL;
+    cnc_diag_in_backp  = 1UL;
+    cnc_diag_backp_cnt = 0UL;
+    cnc_diag_pub_cnt   = 0UL;
+    cnc_diag_pub_sz    = 0UL;
 
     /* out frag stream init */
 
@@ -253,16 +253,16 @@ fdgen_tile_net_xsk_rx_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
       FD_COMPILER_MFENCE();
       cnc_diag->in_backp   = cnc_diag_in_backp;
       cnc_diag->backp_cnt += cnc_diag_backp_cnt;
-      cnc_diag->pub_cnt   += cnc_diag_pcap_pub_cnt;
-      cnc_diag->pub_sz    += cnc_diag_pcap_pub_sz;
+      cnc_diag->pub_cnt   += cnc_diag_pub_cnt;
+      cnc_diag->pub_sz    += cnc_diag_pub_sz;
       cnc_diag->fr_cons    = fill_cons;
       cnc_diag->fr_prod    = fill_prod;
       cnc_diag->rx_cons    = rx_cons;
       cnc_diag->rx_prod    = rx_prod;
       FD_COMPILER_MFENCE();
-      cnc_diag_backp_cnt    = 0UL;
-      cnc_diag_pcap_pub_cnt = 0UL;
-      cnc_diag_pcap_pub_sz  = 0UL;
+      cnc_diag_backp_cnt = 0UL;
+      cnc_diag_pub_cnt   = 0UL;
+      cnc_diag_pub_sz    = 0UL;
 
       /* Receive command-and-control signals */
       ulong s = fd_cnc_signal_query( cnc );
@@ -354,8 +354,8 @@ fdgen_tile_net_xsk_rx_run( fdgen_tile_net_xsk_rx_cfg_t * cfg ) {
     rx_cons   = rx_cons   + 1U;
     fill_prod = fill_prod + 1U;
     seq       = fd_seq_inc( seq, 1UL );
-    cnc_diag_pcap_pub_cnt++;
-    cnc_diag_pcap_pub_sz += sz;
+    cnc_diag_pub_cnt++;
+    cnc_diag_pub_sz += sz;
   }
 
   do {
