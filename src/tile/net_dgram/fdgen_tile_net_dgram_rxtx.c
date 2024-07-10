@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "fdgen_tile_net_dgram_rxtx.h"
 
+#include <assert.h>
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/epoll.h>
@@ -75,9 +76,10 @@ fdgen_tile_net_dgram_scratch_footprint( ulong rx_depth,
                                         ulong mtu ) {
   ulong rx_slot_max = rx_depth + 2*rx_burst;
   ulong l = FD_LAYOUT_INIT;
-  l = FD_LAYOUT_APPEND( l, alignof(struct iovec),            tx_burst*sizeof(struct iovec)            );
-  l = FD_LAYOUT_APPEND( l, alignof(struct mmsghdr),          tx_burst*sizeof(struct mmsghdr)          );
-  l = FD_LAYOUT_APPEND( l, FD_CHUNK_ALIGN,                   tx_burst*mtu                             );
+  l = FD_LAYOUT_APPEND( l, alignof(struct sockaddr_storage), tx_burst    *sizeof(struct sockaddr_storage) );
+  l = FD_LAYOUT_APPEND( l, alignof(struct iovec),            tx_burst    *sizeof(struct iovec)            );
+  l = FD_LAYOUT_APPEND( l, alignof(struct mmsghdr),          tx_burst    *sizeof(struct mmsghdr)          );
+  l = FD_LAYOUT_APPEND( l, FD_CHUNK_ALIGN,                   tx_burst    *mtu                             );
   l = FD_LAYOUT_APPEND( l, alignof(struct sockaddr_storage), rx_slot_max *sizeof(struct sockaddr_storage) );
   l = FD_LAYOUT_APPEND( l, alignof(struct iovec),            rx_slot_max *sizeof(struct iovec)            );
   l = FD_LAYOUT_APPEND( l, alignof(struct mmsghdr),          rx_slot_max *sizeof(struct mmsghdr)          );
@@ -211,17 +213,21 @@ fdgen_tile_net_dgram_rxtx_run( fdgen_tile_net_dgram_rxtx_cfg_t * cfg ) {
     }
 
     tx_batch_cnt = 0U;
-    struct iovec * tx_iov;
-    uchar *        tx_buf;
-    tx_iov   = FD_SCRATCH_ALLOC_APPEND( scratch, alignof(struct iovec),   tx_burst*sizeof(struct iovec)   );
-    tx_batch = FD_SCRATCH_ALLOC_APPEND( scratch, alignof(struct mmsghdr), tx_burst*sizeof(struct mmsghdr) );
-    tx_buf   = FD_SCRATCH_ALLOC_APPEND( scratch, FD_CHUNK_ALIGN,          tx_burst*mtu                    );
+    struct sockaddr_storage * tx_addrs;
+    struct iovec *            tx_iov;
+    uchar *                   tx_buf;
+    tx_addrs = FD_SCRATCH_ALLOC_APPEND( scratch, alignof(struct sockaddr_storage), tx_burst*sizeof(struct sockaddr_storage) );
+    tx_iov   = FD_SCRATCH_ALLOC_APPEND( scratch, alignof(struct iovec),            tx_burst*sizeof(struct iovec)   );
+    tx_batch = FD_SCRATCH_ALLOC_APPEND( scratch, alignof(struct mmsghdr),          tx_burst*sizeof(struct mmsghdr) );
+    tx_buf   = FD_SCRATCH_ALLOC_APPEND( scratch, FD_CHUNK_ALIGN,                   tx_burst*mtu                    );
     fd_memset( tx_batch, 0, sizeof(struct mmsghdr)*tx_burst );
     for( ulong j=0UL; j<tx_burst; j++ ) {
-      tx_batch[ j ].msg_hdr.msg_iov    = tx_iov + j;
-      tx_batch[ j ].msg_hdr.msg_iovlen = 1;
-      tx_iov  [ j ].iov_base           = tx_buf;
-      tx_iov  [ j ].iov_len            = mtu;
+      tx_batch[ j ].msg_hdr.msg_name    = tx_addrs + j;
+      tx_batch[ j ].msg_hdr.msg_namelen = sizeof(struct sockaddr_storage);
+      tx_batch[ j ].msg_hdr.msg_iov     = tx_iov + j;
+      tx_batch[ j ].msg_hdr.msg_iovlen  = 1;
+      tx_iov  [ j ].iov_base            = tx_buf;
+      tx_iov  [ j ].iov_len             = mtu;
       tx_buf += mtu;
     }
 
@@ -244,15 +250,15 @@ fdgen_tile_net_dgram_rxtx_run( fdgen_tile_net_dgram_rxtx_cfg_t * cfg ) {
       return 1;
     }
 
-    struct sockaddr_storage * sock_addrs;  /* consider using sockaddr_in instead */
+    struct sockaddr_storage * rx_addrs;  /* consider using sockaddr_in instead */
     struct iovec *            rx_iov;
-    sock_addrs = FD_SCRATCH_ALLOC_APPEND( scratch, alignof(struct sockaddr_storage), rx_slot_max*sizeof(struct sockaddr_storage) );
-    rx_iov     = FD_SCRATCH_ALLOC_APPEND( scratch, alignof(struct iovec),            rx_slot_max*sizeof(struct iovec)            );
-    rx_msg     = FD_SCRATCH_ALLOC_APPEND( scratch, alignof(struct mmsghdr),          rx_slot_max*sizeof(struct mmsghdr)          );
-    fd_memset( tx_batch, 0, rx_slot_max*sizeof(struct mmsghdr) );
+    rx_addrs = FD_SCRATCH_ALLOC_APPEND( scratch, alignof(struct sockaddr_storage), rx_slot_max*sizeof(struct sockaddr_storage) );
+    rx_iov   = FD_SCRATCH_ALLOC_APPEND( scratch, alignof(struct iovec),            rx_slot_max*sizeof(struct iovec)            );
+    rx_msg   = FD_SCRATCH_ALLOC_APPEND( scratch, alignof(struct mmsghdr),          rx_slot_max*sizeof(struct mmsghdr)          );
+    fd_memset( rx_msg, 0, rx_slot_max*sizeof(struct mmsghdr) );
     uchar * rx_cur = rx_dcache;
     for( ulong j=0UL; j<rx_slot_max; j++ ) {
-      rx_msg[ j ].msg_hdr.msg_name    = sock_addrs + j;
+      rx_msg[ j ].msg_hdr.msg_name    = rx_addrs + j;
       rx_msg[ j ].msg_hdr.msg_namelen = sizeof(struct sockaddr_storage);
       rx_msg[ j ].msg_hdr.msg_iov     = rx_iov + j;
       rx_msg[ j ].msg_hdr.msg_iovlen  = 1;
@@ -269,6 +275,9 @@ fdgen_tile_net_dgram_rxtx_run( fdgen_tile_net_dgram_rxtx_cfg_t * cfg ) {
     async_min = fd_tempo_async_min( lazy, 1UL /*event_cnt*/, (float)tick_per_ns );
     if( FD_UNLIKELY( !async_min ) ) { FD_LOG_WARNING(( "bad lazy" )); return 1; }
 
+    /* Sanity check that scratch allocations were within bounds */
+    assert( _scratch <= (ulong)cfg->scratch + cfg->scratch_sz );
+
   } while(0);
 
   FD_LOG_INFO(( "Running datagram socket driver (orig %lu)", orig ));
@@ -281,13 +290,6 @@ fdgen_tile_net_dgram_rxtx_run( fdgen_tile_net_dgram_rxtx_cfg_t * cfg ) {
     /* Do housekeeping at a low rate in the background */
 
     if( FD_UNLIKELY( (now-then)>=0L || tx_batch_cnt==tx_burst ) ) {
-      /* Flush TX batch */
-      if( tx_batch_cnt ) {
-        long send_cnt = sendmmsg( send_fd, tx_batch, tx_batch_cnt, MSG_DONTWAIT );
-        if( send_cnt!=(long)tx_batch_cnt ) cnc_diag_backp_cnt++;
-        tx_batch_cnt = 0U;
-      }
-
       /* Send synchronization info */
       fd_mcache_seq_update( rx_sync, rx_seq );
 
@@ -319,6 +321,14 @@ fdgen_tile_net_dgram_rxtx_run( fdgen_tile_net_dgram_rxtx_cfg_t * cfg ) {
 
       /* Reload housekeeping timer */
       then = now + (long)fd_tempo_async_reload( rng, async_min );
+
+      /* Flush TX batch */
+      if( tx_batch_cnt ) {
+        long send_cnt = sendmmsg( send_fd, tx_batch, tx_batch_cnt, MSG_DONTWAIT );
+        if( send_cnt!=(long)tx_batch_cnt ) cnc_diag_backp_cnt++;
+        tx_batch_cnt = 0U;
+        goto flush_rx; /* Always do RX after TX flush */
+      }
     }
 
     /* Check if there is a new outgoing packet */
@@ -333,7 +343,7 @@ fdgen_tile_net_dgram_rxtx_run( fdgen_tile_net_dgram_rxtx_cfg_t * cfg ) {
 
     ulong tx_seq_found = fd_frag_meta_sse0_seq( tx_mline_sse0 );
     long  tx_diff      = fd_seq_diff( tx_seq_found, tx_seq );
-    if( FD_UNLIKELY( tx_diff<0L ) ) {
+    if( FD_UNLIKELY( tx_diff>0L ) ) {
       cnc_diag_overnp_cnt++;
       tx_seq = tx_seq_found;
       continue;
@@ -350,18 +360,20 @@ fdgen_tile_net_dgram_rxtx_run( fdgen_tile_net_dgram_rxtx_cfg_t * cfg ) {
 
       /* Do speculative reads */
       ulong                sz       = fd_frag_meta_sse1_sz( tx_mline_sse1 );
-      uchar const *        cur      = fd_chunk_to_laddr_const( tx_base, fd_frag_meta_sse1_chunk( tx_mline_sse1 ) );
+      uchar const *        frame    = fd_chunk_to_laddr_const( tx_base, fd_frag_meta_sse1_chunk( tx_mline_sse1 ) );
+      uchar const *        cur      = frame;
       fd_eth_hdr_t const * eth_hdr  = fd_type_pun_const( cur );  cur += sizeof(fd_eth_hdr_t);
       fd_ip4_hdr_t const * ip4_hdr  = fd_type_pun_const( cur );  cur += FD_IP4_GET_IHL( *ip4_hdr )<<2;
       fd_udp_hdr_t const * udp_hdr  = fd_type_pun_const( cur );  cur += sizeof(fd_udp_hdr_t);
       uchar const *        data     = cur;
-      long                 data_sz_ = sz - (cur - tx_base);
+      long                 data_sz_ = sz - ((ulong)udp_hdr + 8UL - (ulong)frame);
 
       /* Stateless verify, impossible with well-behaving producer even
          in case of torn read (reads guaranteed atomic) */
       if( FD_UNLIKELY( ( eth_hdr->net_type != FD_ETH_HDR_TYPE_IP ) |
                        ( FD_IP4_GET_VERSION( *ip4_hdr ) != 4     ) |
-                       ( sz > mtu                                ) ) ) {
+                       ( sz > mtu                                ) |
+                       ( data_sz_ < 0                            ) ) ) {
         cnc_diag_tx_filt_cnt++;
         tx_seq = fd_seq_inc( tx_seq, 1 );
         continue;
@@ -369,10 +381,12 @@ fdgen_tile_net_dgram_rxtx_run( fdgen_tile_net_dgram_rxtx_cfg_t * cfg ) {
 
       /* Speculative copy
          FIXME Add support for reliable mode and remove this copy */
+      ulong data_sz = hdr->msg_hdr.msg_iov->iov_len = (ulong)data_sz_;
+      hdr->msg_len  = (uint)data_sz;
       FD_COMPILER_MFENCE();
       memcpy( &saddr4->sin_addr.s_addr, &ip4_hdr->daddr_c, 4UL );
       saddr4->sin_port = udp_hdr->net_dport;
-      fd_memcpy( payload, data, data_sz_ );
+      fd_memcpy( payload, data, data_sz );
       FD_COMPILER_MFENCE();
 
       /* Detect overrun
@@ -393,6 +407,7 @@ fdgen_tile_net_dgram_rxtx_run( fdgen_tile_net_dgram_rxtx_cfg_t * cfg ) {
 
     /* Pull incoming packets */
 
+flush_rx:
     if( event_idx<0 ) {
       int event_cnt = epoll_wait( epoll_fd, events, FD_TILE_NET_DGRAM_SOCKET_MAX, 0 );
       if( event_cnt<0 ) {
