@@ -42,18 +42,6 @@ union fdgen_tile_net_dgram_epoll_data {
 
 typedef union fdgen_tile_net_dgram_epoll_data fdgen_tile_net_dgram_epoll_data_t;
 
-struct fdgen_tile_net_dgram_rxtx_diag {
-  ulong backp_cnt;
-  ulong rx_cnt;
-  ulong rx_sz;
-  ulong tx_pub_cnt;
-  ulong tx_pub_sz;
-  ulong tx_filt_cnt;
-  ulong overnp_cnt;
-};
-
-typedef struct fdgen_tile_net_dgram_rxtx_diag fdgen_tile_net_dgram_rxtx_diag_t;
-
 struct fdgen_tile_net_dgram_rxtx_cfg {
 
   ulong  orig;
@@ -85,26 +73,6 @@ struct fdgen_tile_net_dgram_rxtx_cfg {
 typedef struct fdgen_tile_net_dgram_rxtx_cfg fdgen_tile_net_dgram_rxtx_cfg_t;
 
 FD_PROTOTYPES_BEGIN
-
-/* fdgen_tile_net_dgram_scratch_{align,footprint} specify parameters of
-   the scratch memory region for a given configuration. */
-
-FD_FN_CONST ulong
-fdgen_tile_net_dgram_scratch_align( void );
-
-FD_FN_CONST ulong
-fdgen_tile_net_dgram_scratch_footprint( ulong rx_depth,
-                                        ulong rx_burst,
-                                        ulong tx_burst,
-                                        ulong mtu );
-
-/* fdgen_tile_net_dgram_dcache_data_sz returns the dcache footprint
-   required for a given configuration. */
-
-FD_FN_CONST ulong
-fdgen_tile_net_dgram_dcache_data_sz( ulong rx_depth,
-                                     ulong rx_burst,
-                                     ulong mtu );
 
 /* fdgen_tile_net_dgram_rxtx_run enters the tile main loop. */
 

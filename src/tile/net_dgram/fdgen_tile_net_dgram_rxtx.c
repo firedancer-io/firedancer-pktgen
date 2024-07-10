@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "fdgen_tile_net_dgram_rxtx.h"
+#include "fdgen_tile_net_dgram.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -62,39 +63,6 @@
 
 #define HEADROOM (42UL)  /* Ethernet header, IPv4 header, UDP header */
 
-#define TILE_ALIGN (128UL)
-
-FD_FN_CONST ulong
-fdgen_tile_net_dgram_scratch_align( void ) {
-  return TILE_ALIGN;  /* arbitrarily large */
-}
-
-FD_FN_CONST ulong
-fdgen_tile_net_dgram_scratch_footprint( ulong rx_depth,
-                                        ulong rx_burst,
-                                        ulong tx_burst,
-                                        ulong mtu ) {
-  ulong rx_slot_max = rx_depth + 2*rx_burst;
-  ulong l = FD_LAYOUT_INIT;
-  l = FD_LAYOUT_APPEND( l, alignof(struct sockaddr_storage), tx_burst    *sizeof(struct sockaddr_storage) );
-  l = FD_LAYOUT_APPEND( l, alignof(struct iovec),            tx_burst    *sizeof(struct iovec)            );
-  l = FD_LAYOUT_APPEND( l, alignof(struct mmsghdr),          tx_burst    *sizeof(struct mmsghdr)          );
-  l = FD_LAYOUT_APPEND( l, FD_CHUNK_ALIGN,                   tx_burst    *mtu                             );
-  l = FD_LAYOUT_APPEND( l, alignof(struct sockaddr_storage), rx_slot_max *sizeof(struct sockaddr_storage) );
-  l = FD_LAYOUT_APPEND( l, alignof(struct iovec),            rx_slot_max *sizeof(struct iovec)            );
-  l = FD_LAYOUT_APPEND( l, alignof(struct mmsghdr),          rx_slot_max *sizeof(struct mmsghdr)          );
-  return FD_LAYOUT_FINI( l, TILE_ALIGN );
-}
-
-FD_FN_CONST ulong
-fdgen_tile_net_dgram_dcache_data_sz( ulong rx_depth,
-                                     ulong rx_burst,
-                                     ulong mtu ) {
-  /* FIXME handle overflow */
-  ulong rx_slot_max = rx_depth + (2*rx_burst);
-  return rx_slot_max * mtu;
-}
-
 int
 fdgen_tile_net_dgram_rxtx_run( fdgen_tile_net_dgram_rxtx_cfg_t * cfg ) {
 
@@ -118,7 +86,7 @@ fdgen_tile_net_dgram_rxtx_run( fdgen_tile_net_dgram_rxtx_cfg_t * cfg ) {
   int              send_fd     = cfg->send_fd;
 
   /* cnc state */
-  fdgen_tile_net_dgram_rxtx_diag_t * cnc_diag;
+  fdgen_tile_net_dgram_diag_t * cnc_diag;
   ulong   cnc_diag_backp_cnt;
   ulong   cnc_diag_tx_pub_cnt;
   ulong   cnc_diag_tx_pub_sz;

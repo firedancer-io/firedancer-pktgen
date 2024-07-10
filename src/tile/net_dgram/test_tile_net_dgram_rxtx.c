@@ -1,4 +1,6 @@
+#define _GNU_SOURCE
 #include "fdgen_tile_net_dgram_rxtx.h"
+#include "fdgen_tile_net_dgram.h"
 #include <firedancer/tango/cnc/fd_cnc.h>
 #include <firedancer/tango/mcache/fd_mcache.h>
 #include <firedancer/tango/dcache/fd_dcache.h>
@@ -191,6 +193,9 @@ recv_tile_main( int     argc,
     ulong tsorig;
     ulong tspub;
     FD_MCACHE_WAIT_REG( sig, chunk, sz, ctl, tsorig, tspub, mline, seq_found, diff, async_rem, mcache, depth, seq );
+
+    /* FIXME look at message data */
+    (void)tspub; (void)tsorig; (void)ctl; (void)sz; (void)chunk; (void)sig; (void)base;
 
     if( FD_UNLIKELY( !async_rem ) ) {
       long now = fd_log_wallclock();
