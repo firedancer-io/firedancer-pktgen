@@ -70,9 +70,9 @@ struct fdgen_tile_net_dgram_rxtx_cfg {
   fd_frag_meta_t * rx_mcache;
   uchar *          rx_dcache;
 
-  ulong tx_batch_max;      /* sendmmsg batch limit */
-  long  tx_batch_timeout;  /* sendmmsg flush timeout (ticks) */
-  ulong rx_batch_max;      /* recvmmsg batch lmit */
+  ulong tx_burst;          /* sendmmsg batch limit */
+  long  tx_burst_timeout;  /* sendmmsg flush timeout (ticks) */
+  ulong rx_burst;          /* recvmmsg batch lmit */
 
   int epoll_fd;  /* level-triggered epoll with fdgen_tile_net_dgram_epoll_data_t user datas */
   int send_fd;   /* unbound AF_INET SOCK_DGRAM socket */
@@ -86,14 +86,27 @@ typedef struct fdgen_tile_net_dgram_rxtx_cfg fdgen_tile_net_dgram_rxtx_cfg_t;
 
 FD_PROTOTYPES_BEGIN
 
+/* fdgen_tile_net_dgram_scratch_{align,footprint} specify parameters of
+   the scratch memory region for a given configuration. */
+
 FD_FN_CONST ulong
 fdgen_tile_net_dgram_scratch_align( void );
 
 FD_FN_CONST ulong
 fdgen_tile_net_dgram_scratch_footprint( ulong rx_depth,
-                                        ulong rx_batch_max,
-                                        ulong tx_batch_max,
-                                        ulong mtu ) ;
+                                        ulong rx_burst,
+                                        ulong tx_burst,
+                                        ulong mtu );
+
+/* fdgen_tile_net_dgram_dcache_data_sz returns the dcache footprint
+   required for a given configuration. */
+
+FD_FN_CONST ulong
+fdgen_tile_net_dgram_dcache_data_sz( ulong rx_depth,
+                                     ulong rx_burst,
+                                     ulong mtu );
+
+/* fdgen_tile_net_dgram_rxtx_run enters the tile main loop. */
 
 int
 fdgen_tile_net_dgram_rxtx_run( fdgen_tile_net_dgram_rxtx_cfg_t * cfg );

@@ -23,30 +23,37 @@
    (backing memory for packet data) is partitioned into the visible
    portion (referred to by mcache and thus may be read by consumers) and
    the invisible portion (safe to write to).  There is at least `burst`
-   contiguous invisible space available at any given time.
+   contiguous invisible space available before each recvmmsg() call.
 
-                    +-----------------+
-        recvmmsg()  |    mcache       |
-            \/      +-----------------+
-        invisible        visible
+   The dcache is internally divided into MTU size slots (rounded up to
+   FD_CHUNK_ALIGN).  The dcache is mirrored by a mmsghdr and iovec array
+   to allow for instant dispatching of recvmmsg calls.
+
+   The start of the invisible region is located using the dcache's
+   watermark (W) and the most recent published slot (R).  The watermark
+   marks the first of the last `burst` slots.  If R<W, the invisible
+   region starts at R+1.  If R>=W, the invisible region starts at 0.
+
+                   +------------------+
+       recvmmsg()  |     mcache       |
+           \/      +------------------+
+       invisible        visible
       +----------------------------------+
       |    dcache                        |
-      +----------------------------------+
+      +----------------------^--------^--+
+                             W        R
 
    The transition between visible and invisible occurs atomically with
    each mcache publish.  After the mcache publish operations:
 
-      +-----------------+
-      |    mcache       |
-      +-----------------+
-           visible          invisible
+      +--------+             +--------+
+      | mcache |             | mcache |
+      +--------+             +--------+
+        visible   invisble     visible
       +----------------------------------+
       |    dcache                        |
-      +----------------------------------+
-
-   The dcache is internally divided into MTU size slots (rounded up to
-   FD_CHUNK_ALIGN).  The dcache is mirrored by a mmsghdr and iovec array
-   to allow for instant dispatching of recvmmsg calls. */
+      +--------^-------------^-----------+
+               R             W */
 
 /* Transmit Side *******************************************************
 
@@ -63,26 +70,33 @@ fdgen_tile_net_dgram_scratch_align( void ) {
 
 FD_FN_CONST ulong
 fdgen_tile_net_dgram_scratch_footprint( ulong rx_depth,
-                                        ulong rx_batch_max,
-                                        ulong tx_batch_max,
+                                        ulong rx_burst,
+                                        ulong tx_burst,
                                         ulong mtu ) {
-  ulong rx_slot_max = rx_depth + 2*rx_batch_max;
+  ulong rx_slot_max = rx_depth + 2*rx_burst;
   ulong l = FD_LAYOUT_INIT;
-  l = FD_LAYOUT_APPEND( l, alignof(struct iovec),            tx_batch_max*sizeof(struct iovec)            );
-  l = FD_LAYOUT_APPEND( l, alignof(struct mmsghdr),          tx_batch_max*sizeof(struct mmsghdr)          );
-  l = FD_LAYOUT_APPEND( l, FD_CHUNK_ALIGN,                   tx_batch_max*mtu                             );
+  l = FD_LAYOUT_APPEND( l, alignof(struct iovec),            tx_burst*sizeof(struct iovec)            );
+  l = FD_LAYOUT_APPEND( l, alignof(struct mmsghdr),          tx_burst*sizeof(struct mmsghdr)          );
+  l = FD_LAYOUT_APPEND( l, FD_CHUNK_ALIGN,                   tx_burst*mtu                             );
   l = FD_LAYOUT_APPEND( l, alignof(struct sockaddr_storage), rx_slot_max *sizeof(struct sockaddr_storage) );
   l = FD_LAYOUT_APPEND( l, alignof(struct iovec),            rx_slot_max *sizeof(struct iovec)            );
   l = FD_LAYOUT_APPEND( l, alignof(struct mmsghdr),          rx_slot_max *sizeof(struct mmsghdr)          );
   return FD_LAYOUT_FINI( l, TILE_ALIGN );
 }
 
+FD_FN_CONST ulong
+fdgen_tile_net_dgram_dcache_data_sz( ulong rx_depth,
+                                     ulong rx_burst,
+                                     ulong mtu ) {
+  /* FIXME handle overflow */
+  ulong rx_slot_max = rx_depth + (2*rx_burst);
+  return rx_slot_max * mtu;
+}
+
 int
 fdgen_tile_net_dgram_rxtx_run( fdgen_tile_net_dgram_rxtx_cfg_t * cfg ) {
 
   if( FD_UNLIKELY( !cfg ) ) { FD_LOG_WARNING(( "NULL cfg" )); return 1; }
-
-  FD_SCRATCH_ALLOC_INIT( scratch, cfg->scratch );
 
   /* load config */
 
@@ -130,11 +144,11 @@ fdgen_tile_net_dgram_rxtx_run( fdgen_tile_net_dgram_rxtx_cfg_t * cfg ) {
   /* TX batching */
   struct mmsghdr * tx_batch;
   uint             tx_batch_cnt;
-  uint             tx_batch_max;
+  uint             tx_burst;
 
   /* RX batching */
   struct mmsghdr * rx_msg;
-  uint             rx_batch_max;
+  uint             rx_burst;
   ulong            rx_slot_idx;    /* next publish at this slot (in [0,rx_slot_wmark]) */
   ulong            rx_slot_wmark;  /* wraparound to 0 when idx crosses this point */
 
@@ -142,16 +156,32 @@ fdgen_tile_net_dgram_rxtx_run( fdgen_tile_net_dgram_rxtx_cfg_t * cfg ) {
 
     FD_LOG_INFO(( "Booting net_dgram_rxtx" ));
 
-    mtu = fd_ulong_align_dn( mtu, FD_CHUNK_ALIGN );
+    mtu = fd_ulong_align_dn( mtu, FD_CHUNK_ALIGN );  /* below assumes chunk aligned */
     if( FD_UNLIKELY( mtu < HEADROOM ) ) {
       FD_LOG_WARNING(( "invalid headroom" ));
+      return 1;
+    }
+
+    /* rx frag stream init */
+
+    if( FD_UNLIKELY( !rx_mcache ) ) { FD_LOG_WARNING(( "NULL rx_mcache" )); return 1; }
+    rx_depth = fd_mcache_depth    ( rx_mcache );
+    rx_sync  = fd_mcache_seq_laddr( rx_mcache );
+    rx_seq   = seq0;
+
+    /* scratch init */
+
+    FD_SCRATCH_ALLOC_INIT( scratch, cfg->scratch );
+    if( FD_UNLIKELY( fdgen_tile_net_dgram_scratch_footprint( rx_depth, cfg->rx_burst, cfg->tx_burst, mtu )
+                     > cfg->scratch_sz ) ) {
+      FD_LOG_WARNING(( "undersz scratch region" ));
       return 1;
     }
 
     /* cnc state init */
 
     if( FD_UNLIKELY( !cnc ) ) { FD_LOG_WARNING(( "NULL cnc" )); return 1; }
-    if( FD_UNLIKELY( fd_cnc_app_sz( cnc )<sizeof(fdgen_tile_net_dgram_rxtx_cfg_t) ) ) { FD_LOG_WARNING(( "undersz cnc diag" )); return 1; }
+    if( FD_UNLIKELY( fd_cnc_app_sz( cnc )<64UL ) ) { FD_LOG_WARNING(( "undersz cnc diag" )); return 1; }
     if( FD_UNLIKELY( fd_cnc_signal_query( cnc )!=FD_CNC_SIGNAL_BOOT ) ) { FD_LOG_WARNING(( "already booted" )); return 1; }
 
     cnc_diag = fd_cnc_app_laddr( cnc );
@@ -174,20 +204,20 @@ fdgen_tile_net_dgram_rxtx_run( fdgen_tile_net_dgram_rxtx_cfg_t * cfg ) {
 
     /* tx batch init */
 
-    tx_batch_max = cfg->tx_batch_max;
-    if( FD_UNLIKELY( !tx_batch_max ) ) {
-      FD_LOG_WARNING(( "invalid tx_batch_max" ));
+    tx_burst = cfg->tx_burst;
+    if( FD_UNLIKELY( !tx_burst ) ) {
+      FD_LOG_WARNING(( "zero tx_burst" ));
       return 1;
     }
 
     tx_batch_cnt = 0U;
     struct iovec * tx_iov;
     uchar *        tx_buf;
-    tx_iov   = FD_SCRATCH_ALLOC_APPEND( scratch, alignof(struct iovec),   tx_batch_max*sizeof(struct iovec)   );
-    tx_batch = FD_SCRATCH_ALLOC_APPEND( scratch, alignof(struct mmsghdr), tx_batch_max*sizeof(struct mmsghdr) );
-    tx_buf   = FD_SCRATCH_ALLOC_APPEND( scratch, FD_CHUNK_ALIGN,          tx_batch_max*mtu                    );
-    fd_memset( tx_batch, 0, sizeof(struct mmsghdr)*tx_batch_max );
-    for( ulong j=0UL; j<tx_batch_max; j++ ) {
+    tx_iov   = FD_SCRATCH_ALLOC_APPEND( scratch, alignof(struct iovec),   tx_burst*sizeof(struct iovec)   );
+    tx_batch = FD_SCRATCH_ALLOC_APPEND( scratch, alignof(struct mmsghdr), tx_burst*sizeof(struct mmsghdr) );
+    tx_buf   = FD_SCRATCH_ALLOC_APPEND( scratch, FD_CHUNK_ALIGN,          tx_burst*mtu                    );
+    fd_memset( tx_batch, 0, sizeof(struct mmsghdr)*tx_burst );
+    for( ulong j=0UL; j<tx_burst; j++ ) {
       tx_batch[ j ].msg_hdr.msg_iov    = tx_iov + j;
       tx_batch[ j ].msg_hdr.msg_iovlen = 1;
       tx_iov  [ j ].iov_base           = tx_buf;
@@ -195,27 +225,24 @@ fdgen_tile_net_dgram_rxtx_run( fdgen_tile_net_dgram_rxtx_cfg_t * cfg ) {
       tx_buf += mtu;
     }
 
-    /* rx frag stream init */
-
-    if( FD_UNLIKELY( !rx_mcache ) ) { FD_LOG_WARNING(( "NULL rx_mcache")); return 1; }
-    rx_depth = fd_mcache_depth    ( rx_mcache );
-    rx_sync  = fd_mcache_seq_laddr( rx_mcache );
-    rx_seq   = seq0;
-
-    if( FD_UNLIKELY( !rx_dcache ) ) { FD_LOG_WARNING(( "NULL dcache" )); return 1; }
-    if( FD_UNLIKELY( !rx_base   ) ) { FD_LOG_WARNING(( "NULL base"   )); return 1; }
-
     /* rx batch init */
 
     ulong rx_slot_max;
-    rx_batch_max = cfg->rx_batch_max;
-    if( FD_UNLIKELY( !rx_batch_max ) ) {
+    rx_burst = cfg->rx_burst;
+    if( FD_UNLIKELY( !rx_burst ) ) {
       FD_LOG_WARNING(( "invalid rx_batch_max" ));
       return 1;
     }
     rx_slot_idx   = 0UL;
-    rx_slot_wmark = rx_depth +   rx_batch_max;
-    rx_slot_max   = rx_depth + 2*rx_batch_max;
+    rx_slot_wmark = rx_depth +   rx_burst;
+    rx_slot_max   = rx_depth + 2*rx_burst;
+
+    if( FD_UNLIKELY( !rx_dcache ) ) { FD_LOG_WARNING(( "NULL dcache" )); return 1; }
+    if( FD_UNLIKELY( !rx_base   ) ) { FD_LOG_WARNING(( "NULL base"   )); return 1; }
+    if( FD_UNLIKELY( fd_dcache_data_sz( rx_dcache ) < rx_slot_max*mtu ) ) {
+      FD_LOG_WARNING(( "undersz dcache (need %lu mtu sz (%lu) slots)", rx_slot_max, mtu ));
+      return 1;
+    }
 
     struct sockaddr_storage * sock_addrs;  /* consider using sockaddr_in instead */
     struct iovec *            rx_iov;
@@ -253,7 +280,7 @@ fdgen_tile_net_dgram_rxtx_run( fdgen_tile_net_dgram_rxtx_cfg_t * cfg ) {
 
     /* Do housekeeping at a low rate in the background */
 
-    if( FD_UNLIKELY( (now-then)>=0L || tx_batch_cnt==tx_batch_max ) ) {
+    if( FD_UNLIKELY( (now-then)>=0L || tx_batch_cnt==tx_burst ) ) {
       /* Flush TX batch */
       if( tx_batch_cnt ) {
         long send_cnt = sendmmsg( send_fd, tx_batch, tx_batch_cnt, MSG_DONTWAIT );
@@ -367,13 +394,14 @@ fdgen_tile_net_dgram_rxtx_run( fdgen_tile_net_dgram_rxtx_cfg_t * cfg ) {
     /* Pull incoming packets */
 
     if( event_idx<0 ) {
-      event_idx = epoll_wait( epoll_fd, events, FD_TILE_NET_DGRAM_SOCKET_MAX, 0 );
-      if( event_idx<0 ) {
+      int event_cnt = epoll_wait( epoll_fd, events, FD_TILE_NET_DGRAM_SOCKET_MAX, 0 );
+      if( event_cnt<0 ) {
         int err = errno;
         if( FD_LIKELY( err==EINTR ) ) continue;
         FD_LOG_WARNING(( "epoll_wait failed (%i-%s)", err, fd_io_strerror( err ) ));
         return 1;
       }
+      event_idx = event_cnt-1;
       continue;
     }
 
@@ -383,13 +411,15 @@ fdgen_tile_net_dgram_rxtx_run( fdgen_tile_net_dgram_rxtx_cfg_t * cfg ) {
     user_data.u64 = events[ event_idx ].data.u64;
     struct mmsghdr * rx_batch = rx_msg + rx_slot_idx;
 
-    long rx_batch_cnt_ = recvmmsg( user_data.fd, rx_batch, rx_batch_max, MSG_DONTWAIT, NULL );
+    long rx_batch_cnt_ = recvmmsg( user_data.fd, rx_batch, rx_burst, MSG_DONTWAIT, NULL );
     if( rx_batch_cnt_<0 ) {
       int err = errno;
       if( FD_LIKELY( err==EAGAIN ) ) {
         now = fd_tickcount();
         continue;
       }
+      FD_LOG_WARNING(( "recvmmsg failed (%i-%s)", err, fd_io_strerror( err ) ));
+      return 1;
     }
     ulong rx_batch_cnt = (ulong)rx_batch_cnt_;
 
@@ -404,7 +434,7 @@ fdgen_tile_net_dgram_rxtx_run( fdgen_tile_net_dgram_rxtx_cfg_t * cfg ) {
       uchar *              frame    = udp_data - HEADROOM;
       struct sockaddr_in * saddr4   = fd_type_pun( msg->msg_hdr.msg_name );
       if( FD_UNLIKELY( saddr4->sin_family!=AF_INET ) ) {
-        FD_LOG_WARNING(( "unexpected address family" ));
+        FD_LOG_WARNING(( "unexpected address family %d", saddr4->sin_family ));
         continue;
       }
 
