@@ -387,11 +387,11 @@ main( int     argc,
   fd_cnc_signal( poll_cnc, FD_CNC_SIGNAL_HALT );
   fd_cnc_signal( rx_cnc,   FD_CNC_SIGNAL_HALT );
 
-  FD_TEST( fd_cnc_wait( poll_cnc, FD_CNC_SIGNAL_HALT, (long)5e9, NULL )==FD_CNC_SIGNAL_BOOT );
-  FD_TEST( fd_cnc_wait( rx_cnc,   FD_CNC_SIGNAL_HALT, (long)5e9, NULL )==FD_CNC_SIGNAL_BOOT );
-
   fd_cnc_close( poll_cnc );
   fd_cnc_close( rx_cnc   );
+
+  FD_TEST( fd_cnc_wait( poll_cnc, FD_CNC_SIGNAL_HALT, (long)5e9, NULL )==FD_CNC_SIGNAL_BOOT );
+  FD_TEST( fd_cnc_wait( rx_cnc,   FD_CNC_SIGNAL_HALT, (long)5e9, NULL )==FD_CNC_SIGNAL_BOOT );
 
   fd_tile_exec_delete( poll_tile, NULL );
 

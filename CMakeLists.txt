@@ -46,14 +46,15 @@ add_library(fdgen_lib STATIC
     src/cfg/fdgen_cfg_net_socket.c
     src/cfg/fdgen_cfg_net_xdp.c
     src/cfg/fdgen_netlink.c
+    src/tile/net_dgram/fdgen_tile_net_dgram_rxtx.c
+    src/tile/net_dgram/fdgen_tile_net_dgram_tx.c
     src/tile/net_xsk/fdgen_tile_net_xsk_poll.c
     src/tile/net_xsk/fdgen_tile_net_xsk_rx.c)
 
 include_directories(AFTER SYSTEM
     ${FIREDANCER_BUILD}/include)
 
-add_executable(fdgen_rxdrop src/app/fdgen_rxdrop.c)
-target_link_libraries(fdgen_rxdrop
+set(FDGEN_COMMON_DEPS
     fdgen_lib
     fdgen_xdp_ports
     ${FIREDANCER_BUILD}/lib/libfd_quic.a
@@ -63,12 +64,11 @@ target_link_libraries(fdgen_rxdrop
     -pthread
     -lstdc++)
 
+add_executable(fdgen_rxdrop src/app/fdgen_rxdrop.c)
+target_link_libraries(fdgen_rxdrop ${FDGEN_COMMON_DEPS})
+
+add_executable(test_tile_net_dgram_rxtx src/tile/net_dgram/test_tile_net_dgram_rxtx.c)
+target_link_libraries(test_tile_net_dgram_rxtx ${FDGEN_COMMON_DEPS})
+
 add_executable(test_tile_net_xsk_rx src/tile/net_xsk/test_tile_net_xsk_rx.c)
-target_link_libraries(test_tile_net_xsk_rx
-    fdgen_lib
-    fdgen_xdp_ports
-    ${FIREDANCER_BUILD}/lib/libfd_waltz.a
-    ${FIREDANCER_BUILD}/lib/libfd_tango.a
-    ${FIREDANCER_BUILD}/lib/libfd_util.a
-    -pthread
-    -lstdc++)
+target_link_libraries(test_tile_net_xsk_rx ${FDGEN_COMMON_DEPS})
